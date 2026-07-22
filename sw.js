@@ -1,5 +1,5 @@
 // ============ Service worker — casca offline (FITOS) ============
-const CACHE = 'fitos-v2';
+const CACHE = 'fitos-v3';
 const ASSETS = [
   './',
   './index.html',

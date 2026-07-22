@@ -175,6 +175,50 @@ class App {
   }
   countBeep(rem) { if (rem === 3 || rem === 2 || rem === 1) { this.beep(720, 0.11); navigator.vibrate?.(40); } }
   endBeep() { this.beep(1046, 0.4, 0.22); navigator.vibrate?.([120, 80, 120]); }
+  // Pulsos por tick: só vibração — o som vem dos bipes pré-agendados
+  // (_schedFor), que tocam na hora certa mesmo com o JS congelado em 2º plano.
+  _pulse(rem) { if (rem <= 3) navigator.vibrate?.(40); }
+  _pulseEnd() { navigator.vibrate?.([120, 80, 120]); }
+  _schedFor(secs) {
+    this._schedCancel();
+    const ac = this._audio(); if (!ac || secs <= 0) return;
+    const t0 = ac.currentTime;
+    this._sched = [];
+    const mk = (when, freq, dur, vol) => {
+      if (when < 0.05) return;
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'square'; o.frequency.value = freq;
+      g.gain.setValueAtTime(vol, t0 + when);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + when + dur);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t0 + when); o.stop(t0 + when + dur);
+      this._sched.push(o);
+    };
+    [3, 2, 1].forEach(k => { if (secs > k) mk(secs - k, 720, 0.11, 0.18); });
+    mk(secs, 1046, 0.4, 0.22);
+  }
+  _schedCancel() { (this._sched || []).forEach(o => { try { o.stop(); } catch (e) { /* já parou */ } }); this._sched = []; }
+  // Reagenda os bipes conforme a fase atual da sessão (descanso ou cronômetro)
+  _resched() {
+    this._schedCancel();
+    const s = this.state.session;
+    if (!s || s.done) return;
+    if (s.resting) { if (s.remaining > 0) this._schedFor(s.remaining); return; }
+    const ex = this._curEx(), t = T(ex.type);
+    if (t.time && s.workRun && (s.workLeft ?? ex.value) > 0) this._schedFor(s.workLeft ?? ex.value);
+  }
+  // Tom contínuo inaudível (45 Hz, −54 dB): impede o Chrome de marcar a aba
+  // como silenciosa e congelar os timers quando a tela apaga.
+  _keepAliveStart() {
+    const ac = this._audio(); if (!ac || this._ka) return;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.value = 45;
+    g.gain.value = 0.002;
+    o.connect(g); g.connect(ac.destination);
+    o.start();
+    this._ka = o;
+  }
+  _keepAliveStop() { try { this._ka?.stop(); } catch (e) { /* já parou */ } this._ka = null; }
 
   async _wake(on) {
     try {
@@ -258,13 +302,14 @@ class App {
     this._wake(true);
     this._msStart('hiit');
     this.setState({ hiitRun: { seq, idx: 0, remaining: seq[0].dur, running: true } });
+    this._schedFor(seq[0].dur);
     this._startTicker(() => this._hiitTick());
   }
   _hiitTick() {
     const r = this.state.hiitRun; if (!r || !r.running) return;
     const rem = r.remaining - 1;
-    if (rem > 0) { this.countBeep(rem); this.setState({ hiitRun: { ...r, remaining: rem } }); return; }
-    this.endBeep();
+    if (rem > 0) { this._pulse(rem); this.setState({ hiitRun: { ...r, remaining: rem } }); return; }
+    this._pulseEnd();
     const idx = r.idx + 1;
     if (idx >= r.seq.length || r.seq[idx].phase === 'done') {
       this._clear(); this._wake(false); this._msStop();
@@ -272,11 +317,14 @@ class App {
       return;
     }
     this.setState({ hiitRun: { ...r, idx, remaining: r.seq[idx].dur } });
+    this._schedFor(r.seq[idx].dur);
   }
   toggleHiit() {
     const r = this.state.hiitRun; if (!r) return;
     if (r.seq[r.idx].phase === 'done') { this._msStop(); this.setState({ hiitRun: null }); return; }
-    this.setState({ hiitRun: { ...r, running: !r.running } });
+    const running = !r.running;
+    this.setState({ hiitRun: { ...r, running } });
+    if (running) this._schedFor(r.remaining); else this._schedCancel();
   }
   skipHiit() {
     const r = this.state.hiitRun; if (!r) return;
@@ -287,6 +335,7 @@ class App {
     } else {
       this.beep(880, 0.14);
       this.setState({ hiitRun: { ...r, idx, remaining: r.seq[idx].dur } });
+      this._schedFor(r.seq[idx].dur);
     }
   }
   stopHiit() { this._clear(); this._wake(false); this._msStop(); this.setState({ hiitRun: null }); }
@@ -308,16 +357,16 @@ class App {
     const elapsed = s.elapsed + 1;
     if (s.resting) {
       const rem = s.remaining - 1;
-      if (rem > 0) { this.countBeep(rem); this.setState({ session: { ...s, elapsed, remaining: rem } }); return; }
-      this.endBeep();
+      if (rem > 0) { this._pulse(rem); this.setState({ session: { ...s, elapsed, remaining: rem } }); return; }
+      this._pulseEnd();
       this.setState({ session: { ...s, elapsed, resting: false, remaining: 0 } });
       return;
     }
     const ex = this._curEx(), t = T(ex.type);
     if (t.time && s.workRun) {
       const rem = (s.workLeft ?? ex.value) - 1;
-      if (rem > 0) { this.countBeep(rem); this.setState({ session: { ...s, elapsed, workLeft: rem } }); return; }
-      this.endBeep();
+      if (rem > 0) { this._pulse(rem); this.setState({ session: { ...s, elapsed, workLeft: rem } }); return; }
+      this._pulseEnd();
       this._applyNext({ ...this._nextAfterSet({ ...s, workLeft: 0 }), elapsed });
       return;
     }
@@ -353,32 +402,36 @@ class App {
       if (this.state.screen === 'lock') patch.screen = 'session';
     }
     this.setState(patch);
+    this._resched();
   }
   toggleWork() {
     const s = this.state.session; if (!s || s.resting) return;
     const ex = this._curEx(); if (!T(ex.type).time) return;
     const run = !s.workRun;
     this.setState({ session: { ...s, workRun: run } });
+    this._resched();
     if (run) this.beep(680, 0.08);
   }
   _curEx() { const s = this.state.session; const w = this.state.workouts.find(x => x.id === s.wId); return w.exercises[s.exIdx]; }
   sessPrimary() {
     const s = this.state.session; if (!s) return;
-    if (s.resting) { this.setState({ session: { ...s, resting: false, remaining: 0 } }); return; }
+    if (s.resting) { this.setState({ session: { ...s, resting: false, remaining: 0 } }); this._resched(); return; }
     this._applyNext(this._nextAfterSet(s));
   }
   sessSecondary() {
     const s = this.state.session; if (!s) return;
-    if (s.resting) { this.setState({ session: { ...s, resting: false, remaining: 0 } }); return; }
+    if (s.resting) { this.setState({ session: { ...s, resting: false, remaining: 0 } }); this._resched(); return; }
     const w = this.state.workouts.find(x => x.id === s.wId);
     if (s.exIdx + 1 >= w.exercises.length) { this._clear(); this._applyNext({ ...s, done: true }); return; }
     this.setState({ session: { ...s, exIdx: s.exIdx + 1, setIdx: 0, resting: false, remaining: 0, ...this._workInit(w.exercises[s.exIdx + 1]) } });
+    this._resched();
   }
   sessPrev() {
     const s = this.state.session; if (!s || s.exIdx <= 0) return;
     const w = this.state.workouts.find(x => x.id === s.wId);
     const pi = s.exIdx - 1;
     this.setState({ session: { ...s, exIdx: pi, setIdx: 0, resting: false, remaining: 0, ...this._workInit(w.exercises[pi]) } });
+    this._resched();
   }
   sessNextEx() {
     const s = this.state.session; if (!s) return;
@@ -386,8 +439,13 @@ class App {
     if (s.exIdx + 1 >= w.exercises.length) return;
     const ni = s.exIdx + 1;
     this.setState({ session: { ...s, exIdx: ni, setIdx: 0, resting: false, remaining: 0, ...this._workInit(w.exercises[ni]) } });
+    this._resched();
   }
-  restAdj(d) { const s = this.state.session; if (!s || !s.resting) return; this.setState({ session: { ...s, remaining: Math.max(1, s.remaining + d) } }); }
+  restAdj(d) {
+    const s = this.state.session; if (!s || !s.resting) return;
+    this.setState({ session: { ...s, remaining: Math.max(1, s.remaining + d) } });
+    this._resched();
+  }
   quitSession() { this._clear(); this._wake(false); this._msStop(); this.setState({ screen: 'home', session: null }); }
 
   // ------------------------------------------------- Media Session (lock screen)
@@ -412,6 +470,7 @@ class App {
   _msStart(kind) {
     if (!('mediaSession' in navigator)) return;
     this._msEnsureAudio().play().catch(() => {});
+    this._keepAliveStart();
     const ms = navigator.mediaSession;
     const set = (act, fn) => { try { ms.setActionHandler(act, fn); } catch (e) { /* ação não suportada */ } };
     if (kind === 'hiit') {
@@ -424,7 +483,13 @@ class App {
   }
   _msUpdate(title, artist, dur, pos, playing = true) {
     try {
-      navigator.mediaSession.metadata = new MediaMetadata({ title, artist: artist || 'FITOS', album: 'FITOS//TERMINAL DE TREINO' });
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title, artist: artist || 'FITOS', album: 'FITOS//TERMINAL DE TREINO',
+        artwork: [
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+        ],
+      });
       navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
       if (dur != null && dur > 0) navigator.mediaSession.setPositionState({ duration: dur, position: Math.max(0, Math.min(pos, dur)), playbackRate: 1 });
       else navigator.mediaSession.setPositionState();
@@ -449,6 +514,8 @@ class App {
     }
   }
   _msStop() {
+    this._keepAliveStop();
+    this._schedCancel();
     try {
       this._msAudio?.pause();
       navigator.mediaSession.metadata = null;
