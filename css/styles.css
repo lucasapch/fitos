@@ -1,0 +1,93 @@
+/* ============================================================================
+   FITOS — Terminal de Treino · tema CRT (design "Treino OCR")
+   ========================================================================== */
+
+@font-face {
+  font-family: 'DSEG7';
+  src: url('https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic/DSEG7Classic-Bold.woff2') format('woff2');
+  font-display: swap;
+}
+
+@keyframes crtflk { 0%, 96%, 100% { opacity: 1 } 97% { opacity: .86 } 98% { opacity: .97 } 99% { opacity: .9 } }
+@keyframes blink { 50% { opacity: 0 } }
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: #080b09;
+  font-family: 'Share Tech Mono', monospace;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+a { color: #46e08a; }
+a:hover { color: #a6ffca; }
+
+/* Moldura: ocupa a tela toda no celular, centrada no desktop */
+#frame {
+  position: relative;
+  height: 100dvh;
+  max-width: 430px;
+  margin: 0 auto;
+  overflow: hidden;
+  background: radial-gradient(120% 100% at 50% 38%, #0a2416 0%, #061a0f 55%, #03100a 100%);
+}
+@media (min-width: 500px) {
+  body { display: flex; align-items: center; justify-content: center; }
+  #frame {
+    width: 100%;
+    height: min(860px, 100dvh - 24px);
+    border-radius: 32px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .7), 0 0 0 14px #0a0e0b, 0 0 0 16px rgba(60, 120, 80, .15);
+  }
+}
+
+#content {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  color: #46e08a;
+  padding-top: max(8px, env(safe-area-inset-top));
+}
+#content.theme-ambar { filter: sepia(1) saturate(2.4) hue-rotate(-18deg) brightness(1.05); }
+
+/* Sobreposições CRT */
+.fx { position: absolute; inset: 0; pointer-events: none; }
+#fx-scanlines { z-index: 5; background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 25, 10, .4) 2px 3px); }
+#fx-vignette { z-index: 6; background: radial-gradient(130% 100% at 50% 50%, transparent 52%, rgba(0, 0, 0, .6)); }
+#fx-flicker { z-index: 7; background: rgba(120, 255, 170, .02); animation: crtflk 5s infinite; }
+
+/* Displays numéricos (DSEG7) — inputs herdam o visual de painel */
+input {
+  font-family: 'DSEG7', monospace;
+  background: transparent;
+  border: none;
+  outline: none;
+  border-radius: 0;
+  text-align: center;
+  width: 100%;
+  color: #6effa8;
+  text-shadow: 0 0 8px rgba(70, 224, 138, .5);
+}
+input::-webkit-inner-spin-button,
+input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* Inputs de texto (nomes) */
+input.ti {
+  font-family: 'Share Tech Mono', monospace;
+  text-align: left;
+  color: #a6ffca;
+}
+
+.cbtn { cursor: pointer; user-select: none; -webkit-user-select: none; }
+.cbtn:active { filter: brightness(1.4); }
+
+.blink { animation: blink 1.1s step-end infinite; }
+
+::-webkit-scrollbar { width: 0; height: 0; }
+* { scrollbar-width: none; }
