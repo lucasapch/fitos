@@ -262,6 +262,18 @@ class App {
     if (i >= 0) ws[i] = clean; else ws.unshift(clean);
     this.setState({ workouts: ws, screen: 'list', draft: null });
   }
+  // Exclui o treino deste aparelho (o histórico já registrado é preservado)
+  deleteWorkout(id) {
+    const w = this.state.workouts.find(x => x.id === id); if (!w) return;
+    if (!confirm('EXCLUIR "' + w.name + '"?\n\nO treino será removido deste aparelho. O histórico de sessões já concluídas é mantido.')) return;
+    const patch = { workouts: this.state.workouts.filter(x => x.id !== id) };
+    if (this.state.draft && this.state.draft.id === id) { patch.draft = null; patch.screen = 'list'; }
+    if (this.state.session && this.state.session.wId === id) {
+      this._clear(); this._wake(false); this._msStop();
+      patch.session = null; patch.screen = 'list';
+    }
+    this.setState(patch);
+  }
   addExercise() {
     this._mutDraft(d => {
       d.exercises.forEach(e => e._open = false);
@@ -683,6 +695,7 @@ class App {
       newWorkout: () => this.newWorkout(),
       cancelEdit: () => this.go('list'),
       saveWorkout: () => this.saveWorkout(),
+      delW: () => this.deleteWorkout(d.id),
       addExercise: () => this.addExercise(),
       exToggle: () => this.toggleEx(i),
       exRemove: () => this.removeEx(i),
@@ -863,6 +876,7 @@ class App {
         <div style="display:flex;align-items:center;gap:11px;padding:11px 13px">
           <span style="font-family:'DSEG7',monospace;font-size:15px;color:${GREEN};text-shadow:0 0 5px rgba(70,224,138,.5)">${pad(i + 1)}</span>
           <div style="flex:1;min-width:0"><div style="font-size:15px;color:${BRIGHT}">${esc(w.name)}</div><div style="font-size:10px;color:${DIM}">${this._wMeta(w)}</div></div>
+          <span data-act="delW" data-id="${w.id}" class="cbtn" style="flex:none;color:#e06a6a;font-size:15px;padding:2px 4px" title="Excluir treino">✕</span>
         </div>
         <div style="display:flex;border-top:1px solid rgba(70,224,138,.22)">
           <div data-act="editW" data-id="${w.id}" class="cbtn" style="flex:1;text-align:center;padding:9px;font-size:11px;letter-spacing:1px;color:${GREEN};border-right:1px solid rgba(70,224,138,.22)">EDITAR</div>
@@ -977,6 +991,7 @@ class App {
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px"><span style="color:${GREEN}">&gt; EXERCICIOS</span><span style="font-family:'DSEG7',monospace;font-size:13px;color:${GREEN};text-shadow:0 0 5px rgba(70,224,138,.5)">${pad(d.exercises.length)}</span></div>
           ${cards}
           <div data-act="addExercise" class="cbtn" style="border:1px dashed rgba(70,224,138,.45);padding:12px;text-align:center;font-size:11px;letter-spacing:1.5px;color:${GREEN}">+ ADICIONAR EXERCICIO</div>
+          ${d.id ? `<div data-act="delW" data-id="${d.id}" class="cbtn" style="margin-top:6px;border:1px solid rgba(224,106,106,.4);padding:11px;text-align:center;font-size:10px;letter-spacing:1.5px;color:#e06a6a">✕ EXCLUIR TREINO</div>` : ''}
         </div>
       </div>`;
   }
