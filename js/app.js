@@ -121,6 +121,13 @@ class App {
       const el = e.target.closest('[data-chg]');
       if (el) this.onChange(el.dataset.chg, el);
     });
+    // Com um campo focado a re-renderização fica suspensa (senão o tick do
+    // timer destruiria o input no meio da digitação); retoma ao desfocar.
+    root.addEventListener('focusout', () => {
+      setTimeout(() => {
+        if (this._renderPending && !this._inputFocused()) { this._renderPending = false; this.render(); }
+      }, 0);
+    });
     document.addEventListener('pointerdown', () => { this._audio(); }, { once: true });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && (this.state.session || this.state.hiitRun)) this._wake(true);
@@ -202,7 +209,7 @@ class App {
   _resched() {
     this._schedCancel();
     const s = this.state.session;
-    if (!s || s.done) return;
+    if (!s || s.done || !s.started || s.paused) return;
     if (s.resting) { if (s.remaining > 0) this._schedFor(s.remaining); return; }
     const ex = this._curEx(), t = T(ex.type);
     if (t.time && s.workRun && (s.workLeft ?? ex.value) > 0) this._schedFor(s.workLeft ?? ex.value);
@@ -233,7 +240,7 @@ class App {
   // ---------------------------------------------------------------- editor
   newWorkout() {
     this.setState({ screen: 'editor', draft: { id: null, name: 'Novo Treino', exercises: [
-      { id: uid(), name: 'Exercício 1', type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, _open: true },
+      { id: uid(), name: 'Exercício 1', type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, warmup: 0, drop: 0, _open: true },
     ] } });
   }
   editWorkout(id) {
@@ -258,7 +265,7 @@ class App {
   addExercise() {
     this._mutDraft(d => {
       d.exercises.forEach(e => e._open = false);
-      d.exercises.push({ id: uid(), name: 'Exercício ' + (d.exercises.length + 1), type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, _open: true });
+      d.exercises.push({ id: uid(), name: 'Exercício ' + (d.exercises.length + 1), type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, warmup: 0, drop: 0, _open: true });
     });
   }
   toggleEx(i) { this._mutDraft(d => { const was = d.exercises[i]._open; d.exercises.forEach(e => e._open = false); d.exercises[i]._open = !was; }); }
@@ -341,19 +348,39 @@ class App {
   stopHiit() { this._clear(); this._wake(false); this._msStop(); this.setState({ hiitRun: null }); }
 
   // ---------------------------------------------------------------- sessão
+  // Abre a sessão em modo "pronto para começar": o relógio só anda após INICIAR.
   startSession(id) {
     const w = this.state.workouts.find(x => x.id === id);
     if (!w || !w.exercises.length) return;
-    this._wake(true);
-    this._msStart('session');
+    this._clear();
     this.setState({ screen: 'session', session: {
       wId: id, exIdx: 0, setIdx: 0, resting: false, remaining: 0, elapsed: 0, done: false,
+      started: false, paused: false,
       ...this._workInit(w.exercises[0]),
     } });
+  }
+  sessBegin() {
+    const s = this.state.session; if (!s || s.started) return;
+    this._wake(true);
+    this._msStart('session');
+    this.beep(880, 0.18);
+    this.setState({ session: { ...s, started: true, elapsed: 0 } });
     this._startTicker(() => this._sessTick());
   }
+  sessEdit() {
+    const s = this.state.session; if (!s || s.started) return;
+    const id = s.wId;
+    this.setState({ session: null });
+    this.editWorkout(id);
+  }
+  _sessPause(on) {
+    const s = this.state.session;
+    if (!s || s.done || !s.started || !!s.paused === on) return;
+    this.setState({ session: { ...s, paused: on } });
+    this._resched();
+  }
   _sessTick() {
-    const s = this.state.session; if (!s || s.done) return;
+    const s = this.state.session; if (!s || s.done || !s.started || s.paused) return;
     const elapsed = s.elapsed + 1;
     if (s.resting) {
       const rem = s.remaining - 1;
@@ -373,10 +400,26 @@ class App {
     this.setState({ session: { ...s, elapsed } });
   }
   _workInit(ex) { const t = T(ex.type); return t.time ? { workLeft: ex.value, workRun: false } : { workLeft: 0, workRun: false }; }
+  // Sequência de séries do exercício: aquecimento (W) → válidas (V) → drop (D)
+  _setTypes(ex) {
+    return [
+      ...Array(ex.warmup || 0).fill('W'),
+      ...Array(ex.sets || 0).fill('V'),
+      ...Array(ex.drop || 0).fill('D'),
+    ];
+  }
+  _setTypeLabel(t) { return t === 'W' ? 'AQUECIMENTO' : (t === 'D' ? 'DROP SET' : ''); }
+  _exSummary(ex) {
+    const t = T(ex.type);
+    const total = this._setTypes(ex).length;
+    const base = t.time ? total + 'x ' + ex.value + 's'
+      : (ex.type === 'corpo' ? total + 'x' + ex.reps + ' · livre' : total + 'x' + ex.reps + ' · ' + ex.value + ' ' + t.unit);
+    return base + (ex.warmup ? ' · ' + ex.warmup + ' AQ' : '') + (ex.drop ? ' · ' + ex.drop + ' DROP' : '');
+  }
   _nextAfterSet(s) {
     const w = this.state.workouts.find(x => x.id === s.wId);
     const ex = w.exercises[s.exIdx];
-    const lastSet = s.setIdx + 1 >= ex.sets, lastEx = s.exIdx + 1 >= w.exercises.length;
+    const lastSet = s.setIdx + 1 >= this._setTypes(ex).length, lastEx = s.exIdx + 1 >= w.exercises.length;
     if (lastSet) {
       if (lastEx) { this._clear(); this.beep(1046, 0.5, 0.24); return { ...s, done: true }; }
       return { ...s, exIdx: s.exIdx + 1, setIdx: 0, resting: true, remaining: ex.rest, ...this._workInit(w.exercises[s.exIdx + 1]) };
@@ -446,6 +489,29 @@ class App {
     this.setState({ session: { ...s, remaining: Math.max(1, s.remaining + d) } });
     this._resched();
   }
+  // Ajustes ao vivo durante a sessão: gravam direto no treino (valem também
+  // para as próximas sessões e para a Evolução).
+  _liveEdit(fn) {
+    const s = this.state.session; if (!s) return;
+    const ws = this.state.workouts.map(w => w.id !== s.wId ? w
+      : { ...w, exercises: w.exercises.map((e, i) => i === s.exIdx ? fn({ ...e }) : e) });
+    this.setState({ workouts: ws });
+  }
+  liveVal(d) {
+    const ex = this._curEx();
+    const st = (ex.type === 'maquina' || ex.type === 'elastico') ? 1 : 2.5;
+    this._liveEdit(e => ({ ...e, value: Math.max(0, +(e.value + d * st).toFixed(1)) }));
+  }
+  liveRep(d) {
+    const ex = this._curEx(), t = T(ex.type);
+    if (t.time) {
+      this._liveEdit(e => ({ ...e, value: Math.max(5, e.value + d * 5) }));
+      const s = this.state.session;
+      if (!s.workRun) this.setState({ session: { ...s, workLeft: this._curEx().value } });
+    } else {
+      this._liveEdit(e => ({ ...e, reps: Math.max(1, Math.min(100, e.reps + d)) }));
+    }
+  }
   quitSession() { this._clear(); this._wake(false); this._msStop(); this.setState({ screen: 'home', session: null }); }
 
   // ------------------------------------------------- Media Session (lock screen)
@@ -477,14 +543,14 @@ class App {
       set('play', () => this.toggleHiit()); set('pause', () => this.toggleHiit());
       set('nexttrack', () => this.skipHiit()); set('previoustrack', null);
     } else {
-      set('play', () => this.toggleWork()); set('pause', () => this.toggleWork());
+      set('play', () => this._sessPause(false)); set('pause', () => this._sessPause(true));
       set('nexttrack', () => this.sessPrimary()); set('previoustrack', () => this.sessPrev());
     }
   }
-  _msUpdate(title, artist, dur, pos, playing = true) {
+  _msUpdate(title, artist, dur, pos, playing = true, album) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title, artist: artist || 'FITOS', album: 'FITOS//TERMINAL DE TREINO',
+        title, artist: artist || 'FITOS', album: album || 'FITOS//TERMINAL DE TREINO',
         artwork: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -498,13 +564,24 @@ class App {
   _msSync() {
     if (!('mediaSession' in navigator)) return;
     const S = this.state;
-    if (S.session && !S.session.done) {
+    if (S.session && !S.session.done && S.session.started) {
       const s = S.session;
       const w = S.workouts.find(x => x.id === s.wId);
       const ex = w.exercises[s.exIdx], t = T(ex.type);
-      if (s.resting) this._msUpdate('DESCANSO ' + clock(s.remaining), ex.name.toUpperCase(), ex.rest, ex.rest - s.remaining);
-      else if (t.time) { const wl = s.workLeft ?? ex.value; this._msUpdate(clock(wl) + (s.workRun ? '' : ' — PRONTO?'), ex.name.toUpperCase(), ex.value, ex.value - wl, s.workRun); }
-      else this._msUpdate('SÉRIE ' + (s.setIdx + 1) + '/' + ex.sets, ex.name.toUpperCase(), null, null);
+      const types = this._setTypes(ex), total = types.length;
+      const tipo = this._setTypeLabel(types[s.setIdx]);
+      const serie = 'SÉRIE ' + (s.setIdx + 1) + '/' + total + (tipo ? ' · ' + tipo : '');
+      const carga = t.time ? ex.value + 'S' : (ex.type === 'corpo' ? 'LIVRE' : ex.value + ' ' + t.unit.toUpperCase());
+      const album = w.name + ' · EX ' + (s.exIdx + 1) + '/' + w.exercises.length + ' · DESC ' + ex.rest + 'S';
+      const pausa = s.paused ? '⏸ PAUSADO · ' : '';
+      if (s.resting) {
+        this._msUpdate(pausa + 'DESCANSO ' + clock(s.remaining), ex.name.toUpperCase() + ' · ' + serie + ' A SEGUIR', ex.rest, ex.rest - s.remaining, !s.paused, album);
+      } else if (t.time) {
+        const wl = s.workLeft ?? ex.value;
+        this._msUpdate(pausa + clock(wl) + ' · ' + serie, ex.name.toUpperCase() + ' · ' + carga, ex.value, ex.value - wl, s.workRun && !s.paused, album);
+      } else {
+        this._msUpdate(pausa + serie, ex.name.toUpperCase() + ' · ' + ex.reps + ' REPS · ' + carga, null, null, !s.paused, album);
+      }
     } else if (S.hiitRun) {
       const r = S.hiitRun, step = r.seq[r.idx];
       if (step.phase !== 'done') {
@@ -619,6 +696,15 @@ class App {
       restUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.min(600, e.rest + 15) }); },
       restDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.max(0, e.rest - 15) }); },
       quitSession: () => this.quitSession(),
+      sessBegin: () => this.sessBegin(),
+      sessEdit: () => this.sessEdit(),
+      sessPauseToggle: () => this._sessPause(!this.state.session?.paused),
+      liveValUp: () => this.liveVal(1),   liveValDown: () => this.liveVal(-1),
+      liveRepUp: () => this.liveRep(1),   liveRepDown: () => this.liveRep(-1),
+      wuUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { warmup: Math.min(10, (e.warmup || 0) + 1) }); },
+      wuDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { warmup: Math.max(0, (e.warmup || 0) - 1) }); },
+      dsUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { drop: Math.min(10, (e.drop || 0) + 1) }); },
+      dsDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { drop: Math.max(0, (e.drop || 0) - 1) }); },
       sessPrev: () => this.sessPrev(),
       sessNextEx: () => this.sessNextEx(),
       sessPrimary: () => this.sessPrimary(),
@@ -657,12 +743,29 @@ class App {
     else if (chg === 'exSets') this.patchEx(i, { sets: this.clampInt(v, 1, 20) });
     else if (chg === 'exRep') { const e = this.state.draft.exercises[i]; this.patchEx(i, T(e.type).time ? { value: this.clampInt(v, 1, 3600) } : { reps: this.clampInt(v, 1, 100) }); }
     else if (chg === 'exVal') { let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this.patchEx(i, { value: Math.max(0, n) }); }
+    else if (chg === 'liveVal') { let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this._liveEdit(e => ({ ...e, value: Math.max(0, n) })); }
+    else if (chg === 'liveRep') {
+      const ex = this._curEx(), t = T(ex.type);
+      if (t.time) {
+        const n = this.clampInt(v, 5, 3600);
+        this._liveEdit(e => ({ ...e, value: n }));
+        const s = this.state.session;
+        if (!s.workRun) this.setState({ session: { ...s, workLeft: n } });
+      } else {
+        this._liveEdit(e => ({ ...e, reps: this.clampInt(v, 1, 100) }));
+      }
+    }
     else if (chg === 'hiitName') this.renameHiitEx(i, v);
     else if (chg === 'profileName') this.setState({ profile: { ...this.state.profile, name: v.trim().toUpperCase() || 'ATLETA' } });
   }
 
   // ================================================================ render
+  _inputFocused() {
+    const ae = document.activeElement;
+    return !!(ae && ae.tagName === 'INPUT' && this.root.contains(ae));
+  }
   render() {
+    if (this._inputFocused()) { this._renderPending = true; return; }
     const S = this.state, scr = S.screen;
     // preserva rolagem dos painéis entre re-renderizações
     const scrolls = {};
@@ -779,12 +882,7 @@ class App {
   // ---------------------------------------------------------------- editor
   rEditor() {
     const d = this.state.draft; if (!d) return '';
-    const exSummary = ex => {
-      const t = T(ex.type);
-      if (t.time) return ex.sets + 'x ' + ex.value + 's';
-      if (ex.type === 'corpo') return ex.sets + 'x' + ex.reps + ' · livre';
-      return ex.sets + 'x' + ex.reps + ' · ' + ex.value + ' ' + t.unit;
-    };
+    const exSummary = ex => this._exSummary(ex);
     const cards = d.exercises.map((ex, i) => {
       const t = T(ex.type), open = !!ex._open;
       const chips = TYPES.map(tp => {
@@ -800,7 +898,7 @@ class App {
           </div>
           <div style="display:flex;gap:9px">
             <div style="flex:1">
-              <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">SERIES</div>
+              <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">SERIES VALIDAS</div>
               <div style="display:flex;align-items:stretch;border:1px solid ${BORD}">
                 <div data-act="setsDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)">–</div>
                 <input inputmode="numeric" value="${ex.sets}" data-chg="exSets" data-i="${i}" style="flex:1;font-size:18px;padding:6px 0">
@@ -813,6 +911,24 @@ class App {
                 <div data-act="repDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)">–</div>
                 <input inputmode="numeric" value="${t.time ? ex.value : ex.reps}" data-chg="exRep" data-i="${i}" style="flex:1;font-size:18px;padding:6px 0">
                 <div data-act="repUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-left:1px solid rgba(70,224,138,.3)">+</div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:9px">
+            <div style="flex:1">
+              <div style="font-size:9px;letter-spacing:1px;color:#ffd479;margin-bottom:5px">AQUECIMENTO</div>
+              <div style="display:flex;align-items:stretch;border:1px solid rgba(255,212,121,.35)">
+                <div data-act="wuDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ffd479">–</div>
+                <div style="flex:1;text-align:center;padding:6px 0;font-family:'DSEG7',monospace;font-size:18px;color:#ffd479;text-shadow:0 0 8px rgba(255,212,121,.4)">${ex.warmup || 0}</div>
+                <div data-act="wuUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ffd479">+</div>
+              </div>
+            </div>
+            <div style="flex:1">
+              <div style="font-size:9px;letter-spacing:1px;color:#ff8f6a;margin-bottom:5px">DROP SET</div>
+              <div style="display:flex;align-items:stretch;border:1px solid rgba(255,143,106,.35)">
+                <div data-act="dsDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ff8f6a">–</div>
+                <div style="flex:1;text-align:center;padding:6px 0;font-family:'DSEG7',monospace;font-size:18px;color:#ff8f6a;text-shadow:0 0 8px rgba(255,143,106,.4)">${ex.drop || 0}</div>
+                <div data-act="dsUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ff8f6a">+</div>
               </div>
             </div>
           </div>
@@ -877,25 +993,37 @@ class App {
       prevColor: s.exIdx > 0 ? GREEN : 'rgba(70,224,138,.22)',
       nextColor: (s.exIdx + 1 < w.exercises.length) ? GREEN : 'rgba(70,224,138,.22)',
       totalClock: clock(s.elapsed),
-      doneMeta: w.exercises.length + ' EXERCICIOS · ' + w.exercises.reduce((a, e) => a + e.sets, 0) + ' SERIES',
+      doneMeta: w.exercises.length + ' EXERCICIOS · ' + w.exercises.reduce((a, e) => a + this._setTypes(e).length, 0) + ' SERIES',
     };
     if (!s.done) {
       const ex = w.exercises[s.exIdx], t = T(ex.type);
       const wl = s.workLeft ?? ex.value;
+      const types = this._setTypes(ex), total = types.length;
+      const SETC = { W: '255,212,121', V: '70,224,138', D: '255,143,106' };
+      V.ex = ex; V.t = t;
       V.exNum = pad(s.exIdx + 1) + ' / ' + pad(w.exercises.length);
       V.exName = ex.name.toUpperCase();
       V.target = t.time ? ('ALVO: ' + ex.value + 's' + (ex.rest ? (' · DESC ' + ex.rest + 's') : '')) :
         (ex.type === 'corpo' ? ('ALVO: ' + ex.reps + ' REPS · PESO LIVRE') : ('ALVO: ' + ex.reps + ' REPS · ' + ex.value + ' ' + t.unit.toUpperCase()));
-      V.setNum = pad(s.setIdx + 1); V.setTotal = pad(ex.sets);
-      V.sets = Array.from({ length: ex.sets }).map((_, i) => ({
-        bg: i < s.setIdx ? GREEN : (i === s.setIdx ? 'rgba(70,224,138,.5)' : 'rgba(70,224,138,.15)'),
-        glow: i < s.setIdx ? '0 0 6px rgba(70,224,138,.6)' : 'none',
+      V.setNum = pad(s.setIdx + 1); V.setTotal = pad(total);
+      V.setType = this._setTypeLabel(types[s.setIdx]);
+      V.restS = ex.rest;
+      V.paused = !!s.paused;
+      V.sets = types.map((tp, i) => {
+        const c = SETC[tp];
+        return {
+          bg: i < s.setIdx ? `rgb(${c})` : (i === s.setIdx ? `rgba(${c},.5)` : `rgba(${c},.18)`),
+          glow: i < s.setIdx ? `0 0 6px rgba(${c},.6)` : 'none',
+        };
+      });
+      V.upcoming = w.exercises.slice(s.exIdx + 1).map((e, k) => ({
+        num: pad(s.exIdx + 2 + k), name: e.name, summary: this._exSummary(e),
       }));
       V.resting = s.resting;
       V.timed = t.time && !s.resting;
       V.reps = !t.time && !s.resting;
-      V.phaseLabel = s.resting ? 'DESCANSO' : (t.time ? (s.workRun ? 'CRONÔMETRO' : 'PRONTO?') : 'EM SÉRIE');
-      V.phaseColor = s.resting ? GREEN : BRIGHT;
+      V.phaseLabel = s.paused ? 'PAUSADO' : (s.resting ? 'DESCANSO' : (t.time ? (s.workRun ? 'CRONÔMETRO' : 'PRONTO?') : 'EM SÉRIE'));
+      V.phaseColor = s.paused ? '#ffd479' : (s.resting ? GREEN : BRIGHT);
       if (s.resting) { V.ghost = '88:88'; V.clock = clock(s.remaining); V.bigUnit = ''; }
       else if (t.time) { V.ghost = '88:88'; V.clock = clock(wl); V.bigUnit = s.workRun ? 'CRONOMETRANDO...' : ('ALVO ' + ex.value + 'S'); }
       else { V.ghost = '88'; V.clock = pad(ex.reps); V.bigUnit = ex.type === 'corpo' ? 'REPETICOES · LIVRE' : ('REPETICOES · ' + ex.value + ' ' + t.unit.toUpperCase()); }
@@ -908,9 +1036,73 @@ class App {
     return V;
   }
 
+  // Ajustes rápidos de carga/reps durante a sessão (gravam no treino).
+  // O valor central é digitável; −/+ usam os passos padrão.
+  _miniAdjRow(V) {
+    const ex = V.ex, t = V.t;
+    const step = (label, actDown, actUp, chg, val, mode) => `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+        <span style="font-size:8px;letter-spacing:1px;color:${DIM}">${label}</span>
+        <div style="display:flex;align-items:stretch;border:1px solid rgba(70,224,138,.3)">
+          <span data-act="${actDown}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:14px;color:${GREEN};border-right:1px solid rgba(70,224,138,.25)">–</span>
+          <input inputmode="${mode}" value="${val}" data-chg="${chg}" style="width:62px;font-size:15px;padding:5px 0">
+          <span data-act="${actUp}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:14px;color:${GREEN};border-left:1px solid rgba(70,224,138,.25)">+</span>
+        </div>
+      </div>`;
+    const hasLoad = !t.time && ex.type !== 'corpo';
+    const cells = [];
+    if (hasLoad) cells.push(step('CARGA — ' + t.unit.toUpperCase(), 'liveValDown', 'liveValUp', 'liveVal', ex.value, 'decimal'));
+    if (t.time) { if (!V.s.workRun) cells.push(step('TEMPO (S)', 'liveRepDown', 'liveRepUp', 'liveRep', ex.value, 'numeric')); }
+    else cells.push(step('REPS', 'liveRepDown', 'liveRepUp', 'liveRep', ex.reps, 'numeric'));
+    return cells.length ? `<div style="display:flex;gap:16px;margin-top:10px">${cells.join('')}</div>` : '';
+  }
+  // Fila completa do treino: todos os exercícios que ainda faltam
+  _upcomingList(V) {
+    if (!V.upcoming.length) {
+      return `<div style="padding:8px 0;border-top:1px dashed rgba(70,224,138,.25);font-size:10px;letter-spacing:1px;color:${DIM};text-align:center">— ÚLTIMO EXERCÍCIO —</div>`;
+    }
+    const rows = V.upcoming.map(u => `
+      <div style="display:flex;align-items:center;gap:7px;padding:2px 0">
+        <span style="font-family:'DSEG7',monospace;font-size:9px;color:${DIM}">${u.num}</span>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${GREEN}">${esc(u.name)}</span>
+        <span style="color:${DIM};flex:none">${u.summary}</span>
+      </div>`).join('');
+    return `
+      <div style="border-top:1px dashed rgba(70,224,138,.25);padding:7px 0 5px;font-size:9px;letter-spacing:.5px">
+        <div style="color:${DIM};letter-spacing:1px;margin-bottom:3px">A SEGUIR › ${V.upcoming.length}</div>
+        <div data-scroll="upcoming" style="max-height:72px;overflow-y:auto">${rows}</div>
+      </div>`;
+  }
+
   rSession() {
     const V = this._sessVals(); if (!V) return '';
     const s = V.s;
+    if (!s.started) {
+      const rows = V.w.exercises.map((e, i) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px dashed rgba(70,224,138,.2)">
+          <span style="font-family:'DSEG7',monospace;font-size:12px;color:${GREEN}">${pad(i + 1)}</span>
+          <div style="flex:1;min-width:0"><div style="font-size:13px;color:${BRIGHT};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.name)}</div><div style="font-size:9px;color:${DIM}">${this._exSummary(e)}</div></div>
+        </div>`).join('');
+      const totalSeries = V.w.exercises.reduce((a, e) => a + this._setTypes(e).length, 0);
+      return `
+        <div style="height:100%;display:flex;flex-direction:column">
+          <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:6px 16px 9px;border-bottom:1px solid ${BORD};font-size:12px">
+            <span data-act="quitSession" class="cbtn" style="color:${GREEN}">‹ VOLTAR</span>
+            <span style="color:${BRIGHT};letter-spacing:1px">${esc(V.name)}</span>
+            <span style="width:12px"></span>
+          </div>
+          <div data-scroll="prestart" style="flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px">
+            <div style="text-align:center;padding:8px 0 2px">
+              <div style="font-size:10px;letter-spacing:2px;color:${DIM}">PRONTO PARA COMEÇAR</div>
+              <div style="font-size:11px;color:${DIM};margin-top:6px">${V.w.exercises.length} EXERCICIOS · ${totalSeries} SERIES · ~${Math.max(20, V.w.exercises.length * 8)} MIN</div>
+            </div>
+            <div data-act="sessBegin" class="cbtn" style="background:${GREEN};color:${DARK};padding:18px;text-align:center;font-size:16px;letter-spacing:3px;box-shadow:0 0 22px rgba(70,224,138,.55)">► INICIAR TREINO</div>
+            <div data-act="sessEdit" class="cbtn" style="border:1px solid rgba(70,224,138,.45);padding:11px;text-align:center;font-size:11px;letter-spacing:1.5px;color:${GREEN}">✎ EDITAR TREINO</div>
+            <div style="font-size:11px;color:${GREEN};margin-top:4px">&gt; EXERCICIOS</div>
+            ${rows}
+          </div>
+        </div>`;
+    }
     const header = `
       <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:6px 16px 9px;border-bottom:1px solid ${BORD};font-size:12px">
         <span data-act="quitSession" class="cbtn" style="color:${GREEN}">‹ SAIR</span>
@@ -919,6 +1111,9 @@ class App {
           <span data-act="sessPrev" class="cbtn" style="color:${V.prevColor};font-size:17px;line-height:1" title="Exercício anterior">‹</span>
           <span style="color:${DIM};font-family:'DSEG7',monospace;font-size:12px">${V.progress}</span>
           <span data-act="sessNextEx" class="cbtn" style="color:${V.nextColor};font-size:17px;line-height:1" title="Próximo exercício">›</span>
+          ${!s.done ? `<span data-act="sessPauseToggle" class="cbtn" style="color:${V.paused ? '#ffd479' : GREEN};display:flex;margin-left:2px" title="${V.paused ? 'Retomar' : 'Pausar'}">${V.paused
+            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>'}</span>` : ''}
           <span data-act="enterLock" class="cbtn" style="color:${GREEN};display:flex;margin-left:2px" title="Tela de bloqueio"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
         </div>
       </div>`;
@@ -943,7 +1138,7 @@ class App {
           <div style="font-size:24px;color:${BRIGHT};text-shadow:0 0 8px rgba(120,255,170,.5);margin-top:3px">${esc(V.exName)}</div>
           <div style="font-size:12px;color:${GREEN};margin-top:6px">${V.target}</div>
           <div style="display:flex;gap:6px;margin-top:14px">${setsBar}</div>
-          <div style="font-size:10px;color:${DIM};margin-top:6px">SERIE ${V.setNum} DE ${V.setTotal}</div>
+          <div style="font-size:10px;color:${DIM};margin-top:6px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setType === 'DROP SET' ? '#ff8f6a' : '#ffd479'}">${V.setType}</span>` : ''}</div>
           <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">
             <div style="font-size:11px;letter-spacing:4px;color:${V.phaseColor};text-shadow:0 0 8px rgba(70,224,138,.5)">${V.phaseLabel}</div>
             <div style="position:relative;line-height:1">
@@ -958,10 +1153,9 @@ class App {
             </div>` : ''}
             ${V.timed ? `
             <div data-act="toggleWork" class="cbtn" style="margin-top:2px;border:1px solid rgba(70,224,138,.5);padding:8px 18px;font-size:12px;letter-spacing:1px;color:${BRIGHT};box-shadow:0 0 12px rgba(70,224,138,.25)">${V.workBtnLabel}</div>` : ''}
+            ${!V.resting ? this._miniAdjRow(V) : ''}
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px dashed rgba(70,224,138,.25);font-size:10px;letter-spacing:1px;color:${DIM}">
-            <span>PRÓXIMO ›</span><span style="color:${GREEN};text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:10px">${esc(V.nextName)}</span>
-          </div>
+          ${this._upcomingList(V)}
           <div style="display:flex;gap:10px">
             <div data-act="sessSecondary" class="cbtn" style="flex:1;border:1px solid rgba(70,224,138,.4);padding:14px;text-align:center;font-size:13px;letter-spacing:1px;color:${GREEN}">${V.secondaryLabel}</div>
             <div data-act="sessPrimary" class="cbtn" style="flex:2;background:${GREEN};color:${DARK};padding:14px;text-align:center;font-size:14px;letter-spacing:2px;box-shadow:0 0 16px rgba(70,224,138,.5)">${V.primaryLabel}</div>
@@ -998,7 +1192,8 @@ class App {
               <div>
                 <div style="font-size:10px;letter-spacing:3px;color:${V.phaseColor}">${V.phaseLabel}</div>
                 <div style="font-size:21px;color:${BRIGHT};text-shadow:0 0 8px rgba(120,255,170,.5);margin-top:4px">${esc(V.exName)}</div>
-                <div style="font-size:10px;color:${DIM};margin-top:5px">SERIE ${V.setNum} DE ${V.setTotal}</div>
+                <div style="display:flex;gap:5px;margin-top:8px">${V.sets.map(x => `<div style="flex:1;height:6px;background:${x.bg};box-shadow:${x.glow}"></div>`).join('')}</div>
+                <div style="font-size:10px;color:${DIM};margin-top:5px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setType === 'DROP SET' ? '#ff8f6a' : '#ffd479'}">${V.setType}</span>` : ''} · DESC ${V.restS}S</div>
               </div>
               <div style="display:flex;align-items:center;gap:16px">
                 <div style="position:relative;line-height:1">
