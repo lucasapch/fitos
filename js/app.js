@@ -13,6 +13,40 @@ const TYPES = [
 ];
 const T = key => TYPES.find(t => t.key === key) || TYPES[0];
 
+// Tipos de série. 'N' é numerada (1,2,3…); as demais têm sigla própria.
+// RIR = repetições em reserva (0 = falha total).
+const KINDS = [
+  { key: 'W',  short: 'W',  label: 'APROXIMAÇÃO', hint: 'Série leve de preparação', color: '#ffd479' },
+  { key: 'N',  short: '',   label: 'NORMAL',      hint: 'Série valendo',            color: '#46e08a' },
+  { key: 'R3', short: 'R3', label: 'RIR 3',       hint: 'Daria pra fazer mais 3',   color: '#8fe3ff' },
+  { key: 'R2', short: 'R2', label: 'RIR 2',       hint: 'Daria pra fazer mais 2',   color: '#8fe3ff' },
+  { key: 'R1', short: 'R1', label: 'RIR 1',       hint: 'Pararia com 1 no tanque',  color: '#ffb066' },
+  { key: 'R0', short: 'R0', label: 'RIR 0 · FALHA', hint: 'Falha total',            color: '#e06a6a' },
+  { key: 'D',  short: 'D',  label: 'DROP SET',    hint: 'Reduz a carga e continua', color: '#ff8f6a' },
+];
+const K = key => KINDS.find(k => k.key === key) || KINDS[1];
+const isWarm = kind => kind === 'W';
+
+// Converte exercícios do formato antigo ({sets:4, warmup:2, drop:1}) para a
+// lista de séries independentes, cada uma com carga e reps próprias.
+function migrateEx(ex) {
+  if (Array.isArray(ex.sets)) return { ...ex, notes: ex.notes || '' };
+  const mk = kind => ({ id: uid(), kind, value: ex.value, reps: ex.reps });
+  const sets = [
+    ...Array(ex.warmup || 0).fill(0).map(() => mk('W')),
+    ...Array(Math.max(1, ex.sets || 1)).fill(0).map(() => mk('N')),
+    ...Array(ex.drop || 0).fill(0).map(() => mk('D')),
+  ];
+  const { warmup, drop, value, reps, ...rest } = ex;
+  return { ...rest, notes: ex.notes || '', sets };
+}
+const migrateWorkouts = ws => (ws || []).map(w => ({ ...w, exercises: (w.exercises || []).map(migrateEx) }));
+
+const newExercise = (name, open = false) => ({
+  id: uid(), name, type: 'kg', rest: 60, notes: '', _open: open,
+  sets: Array(3).fill(0).map(() => ({ id: uid(), kind: 'N', value: 20, reps: 12 })),
+});
+
 const pad = n => String(Math.max(0, Math.floor(n))).padStart(2, '0');
 const clock = s => pad(Math.floor(s / 60)) + ':' + pad(s % 60);
 const uid = () => 'x' + Math.random().toString(36).slice(2, 8);
@@ -32,7 +66,10 @@ const LS_KEY = 'fitos.v1';
 // Plano SEG–SEX do usuário. Reps usam o teto da faixa (ex.: 5–8 → 8);
 // cargas são valores iniciais de referência — ajuste no editor/na sessão.
 function seedWorkouts() {
-  const ex = (name, type, sets, reps, value, rest) => ({ id: uid(), name, type, sets, reps, value, rest });
+  const ex = (name, type, sets, reps, value, rest) => ({
+    id: uid(), name, type, rest, notes: '',
+    sets: Array(sets).fill(0).map(() => ({ id: uid(), kind: 'N', value, reps })),
+  });
   return [
     { id: 'w-seg', name: 'SEGUNDA — Pernas A', lastDone: null, exercises: [
       ex('Agachamento Livre', 'kg', 4, 8, 40, 120),
@@ -98,7 +135,7 @@ class App {
     const p = loadPersisted() || {};
     this.state = {
       screen: 'home',
-      workouts: p.workouts || seedWorkouts(),
+      workouts: p.workouts ? migrateWorkouts(p.workouts) : seedWorkouts(),
       draft: null,
       session: null,
       hiit: p.hiit || { prepare: 10, work: 20, rest: 10, cycles: 3, exercises: [
@@ -128,6 +165,7 @@ class App {
         if (this._renderPending && !this._inputFocused()) { this._renderPending = false; this.render(); }
       }, 0);
     });
+    if (p.workouts) this.persist();   // grava o formato migrado na primeira carga
     document.addEventListener('pointerdown', () => { this._audio(); }, { once: true });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && (this.state.session || this.state.hiitRun)) this._wake(true);
@@ -212,7 +250,8 @@ class App {
     if (!s || s.done || !s.started || s.paused) return;
     if (s.resting) { if (s.remaining > 0) this._schedFor(s.remaining); return; }
     const ex = this._curEx(), t = T(ex.type);
-    if (t.time && s.workRun && (s.workLeft ?? ex.value) > 0) this._schedFor(s.workLeft ?? ex.value);
+    const dur = s.workLeft ?? this._setAt(ex, s.setIdx).value;
+    if (t.time && s.workRun && dur > 0) this._schedFor(dur);
   }
   // Tom contínuo inaudível (45 Hz, −54 dB): impede o Chrome de marcar a aba
   // como silenciosa e congelar os timers quando a tela apaga.
@@ -240,7 +279,7 @@ class App {
   // ---------------------------------------------------------------- editor
   newWorkout() {
     this.setState({ screen: 'editor', draft: { id: null, name: 'Novo Treino', exercises: [
-      { id: uid(), name: 'Exercício 1', type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, warmup: 0, drop: 0, _open: true },
+      newExercise('Exercício 1', true),
     ] } });
   }
   editWorkout(id) {
@@ -256,7 +295,9 @@ class App {
     const d = this.state.draft; if (!d) return;
     const prev = d.id ? this.state.workouts.find(w => w.id === d.id) : null;
     const clean = { id: d.id || ('w' + uid()), name: d.name || 'Treino', lastDone: prev ? prev.lastDone : null,
-      exercises: d.exercises.map(({ _open, ...e }) => e) };
+      exercises: d.exercises.map(({ _open, ...e }) => ({
+        ...e, sets: (e.sets || []).map(({ _pick, ...st }) => st),
+      })) };
     const ws = this.state.workouts.slice();
     const i = ws.findIndex(w => w.id === clean.id);
     if (i >= 0) ws[i] = clean; else ws.unshift(clean);
@@ -277,10 +318,42 @@ class App {
   addExercise() {
     this._mutDraft(d => {
       d.exercises.forEach(e => e._open = false);
-      d.exercises.push({ id: uid(), name: 'Exercício ' + (d.exercises.length + 1), type: 'kg', sets: 3, reps: 12, value: 20, rest: 60, warmup: 0, drop: 0, _open: true });
+      d.exercises.push(newExercise('Exercício ' + (d.exercises.length + 1), true));
     });
   }
   toggleEx(i) { this._mutDraft(d => { const was = d.exercises[i]._open; d.exercises.forEach(e => e._open = false); d.exercises[i]._open = !was; }); }
+  dupExercise(i) {
+    this._mutDraft(d => {
+      const src = d.exercises[i];
+      const copy = JSON.parse(JSON.stringify({ ...src, _open: false }));
+      copy.id = uid();
+      copy.name = src.name + ' (cópia)';
+      copy.sets = (copy.sets || []).map(s => ({ ...s, id: uid(), _pick: false }));
+      d.exercises.forEach(e => e._open = false);
+      copy._open = true;
+      d.exercises.splice(i + 1, 0, copy);
+    });
+  }
+  // ---- séries independentes ----
+  _mutSets(i, fn) { this._mutDraft(d => { const e = d.exercises[i]; e.sets = fn((e.sets || []).map(s => ({ ...s }))); }); }
+  addSet(i) {
+    this._mutSets(i, sets => {
+      const last = sets[sets.length - 1];
+      return [...sets, { id: uid(), kind: last ? last.kind : 'N', value: last ? last.value : 20, reps: last ? last.reps : 12 }];
+    });
+  }
+  delSet(i, j) { this._mutSets(i, sets => sets.filter((_, k) => k !== j)); }
+  pickSet(i, j) { this._mutSets(i, sets => sets.map((s, k) => ({ ...s, _pick: k === j ? !s._pick : false }))); }
+  setKind(i, j, kind) { this._mutSets(i, sets => sets.map((s, k) => k === j ? { ...s, kind, _pick: false } : s)); }
+  patchSet(i, j, p) { this._mutSets(i, sets => sets.map((s, k) => k === j ? { ...s, ...p } : s)); }
+  // Aceita "90", "1:30" ou "1min30"
+  parseSecs(v) {
+    const s = String(v).trim().replace(',', ':');
+    const m = s.match(/^(\d+)\s*[:m]\s*(\d{1,2})/i);
+    if (m) return Math.max(0, Math.min(3600, parseInt(m[1], 10) * 60 + parseInt(m[2], 10)));
+    const n = parseInt(s.replace(/\D/g, ''), 10);
+    return isNaN(n) ? 0 : Math.max(0, Math.min(3600, n));
+  }
   removeEx(i) { this._mutDraft(d => { d.exercises.splice(i, 1); }); }
   patchEx(i, p) { this._mutDraft(d => { Object.assign(d.exercises[i], p); }); }
   clampInt(v, min, max) { v = parseInt(v, 10); if (isNaN(v)) v = min; return Math.max(min, Math.min(max, v)); }
@@ -293,6 +366,10 @@ class App {
   addHiitEx() { this._mutHiit(h => { h.exercises.push({ name: 'Exercício ' + (h.exercises.length + 1), work: h.work }); }); }
   removeHiitEx(i) { this._mutHiit(h => { h.exercises.splice(i, 1); }); }
   renameHiitEx(i, v) { this._mutHiit(h => { const e = h.exercises[i]; h.exercises[i] = typeof e === 'string' ? { name: v, work: h.work } : { ...e, name: v }; }); }
+  setHiitExWork(i, secs) {
+    const nv = Math.max(5, Math.min(600, secs));
+    this._mutHiit(h => { const e = h.exercises[i]; h.exercises[i] = typeof e === 'string' ? { name: e, work: nv } : { ...e, work: nv }; });
+  }
   stepHiitExWork(i, d) {
     this._mutHiit(h => {
       const e = h.exercises[i];
@@ -403,7 +480,7 @@ class App {
     }
     const ex = this._curEx(), t = T(ex.type);
     if (t.time && s.workRun) {
-      const rem = (s.workLeft ?? ex.value) - 1;
+      const rem = (s.workLeft ?? this._setAt(ex, s.setIdx).value) - 1;
       if (rem > 0) { this._pulse(rem); this.setState({ session: { ...s, elapsed, workLeft: rem } }); return; }
       this._pulseEnd();
       this._applyNext({ ...this._nextAfterSet({ ...s, workLeft: 0 }), elapsed });
@@ -411,32 +488,50 @@ class App {
     }
     this.setState({ session: { ...s, elapsed } });
   }
-  _workInit(ex) { const t = T(ex.type); return t.time ? { workLeft: ex.value, workRun: false } : { workLeft: 0, workRun: false }; }
-  // Sequência de séries do exercício: aquecimento (W) → válidas (V) → drop (D)
-  _setTypes(ex) {
-    return [
-      ...Array(ex.warmup || 0).fill('W'),
-      ...Array(ex.sets || 0).fill('V'),
-      ...Array(ex.drop || 0).fill('D'),
-    ];
+  // Séries do exercício (lista independente) e a série de um índice
+  _sets(ex) { return (ex && Array.isArray(ex.sets)) ? ex.sets : []; }
+  _setAt(ex, i) { return this._sets(ex)[i] || { kind: 'N', value: 0, reps: 0 }; }
+  // Numeração exibida: aproximações mostram W; as demais contam 1,2,3…
+  _setBadge(ex, i) {
+    const st = this._setAt(ex, i), k = K(st.kind);
+    if (k.short) return k.short;
+    const n = this._sets(ex).slice(0, i + 1).filter(x => !K(x.kind).short).length;
+    return String(n);
   }
-  _setTypeLabel(t) { return t === 'W' ? 'AQUECIMENTO' : (t === 'D' ? 'DROP SET' : ''); }
-  _exSummary(ex) {
+  _setLabel(ex, i) { const k = K(this._setAt(ex, i).kind); return k.key === 'N' ? '' : k.label; }
+  _setColor(ex, i) { return K(this._setAt(ex, i).kind).color; }
+  _workInit(ex, setIdx = 0) {
     const t = T(ex.type);
-    const total = this._setTypes(ex).length;
-    const base = t.time ? total + 'x ' + ex.value + 's'
-      : (ex.type === 'corpo' ? total + 'x' + ex.reps + ' · livre' : total + 'x' + ex.reps + ' · ' + ex.value + ' ' + t.unit);
-    return base + (ex.warmup ? ' · ' + ex.warmup + ' AQ' : '') + (ex.drop ? ' · ' + ex.drop + ' DROP' : '');
+    return t.time ? { workLeft: this._setAt(ex, setIdx).value, workRun: false } : { workLeft: 0, workRun: false };
+  }
+  _exSummary(ex) {
+    const t = T(ex.type), sets = this._sets(ex);
+    if (!sets.length) return 'sem séries';
+    const work = sets.filter(s => !isWarm(s.kind));
+    const vals = [...new Set(work.map(s => s.value))];
+    const reps = [...new Set(work.map(s => s.reps))];
+    const nW = sets.length - work.length;
+    const rng = a => a.length === 1 ? a[0] : Math.min(...a) + '–' + Math.max(...a);
+    const base = t.time ? work.length + 'x ' + rng(vals) + 's'
+      : (ex.type === 'corpo' ? work.length + 'x' + rng(reps) + ' · livre'
+        : work.length + 'x' + rng(reps) + ' · ' + rng(vals) + ' ' + t.unit);
+    const extras = [];
+    if (nW) extras.push(nW + ' APROX');
+    const rir = work.filter(s => K(s.kind).key.startsWith('R'));
+    if (rir.length) extras.push(rir.length + ' RIR');
+    const drop = work.filter(s => s.kind === 'D');
+    if (drop.length) extras.push(drop.length + ' DROP');
+    return base + (extras.length ? ' · ' + extras.join(' · ') : '');
   }
   _nextAfterSet(s) {
     const w = this.state.workouts.find(x => x.id === s.wId);
     const ex = w.exercises[s.exIdx];
-    const lastSet = s.setIdx + 1 >= this._setTypes(ex).length, lastEx = s.exIdx + 1 >= w.exercises.length;
+    const lastSet = s.setIdx + 1 >= this._sets(ex).length, lastEx = s.exIdx + 1 >= w.exercises.length;
     if (lastSet) {
       if (lastEx) { this._clear(); this.beep(1046, 0.5, 0.24); return { ...s, done: true }; }
       return { ...s, exIdx: s.exIdx + 1, setIdx: 0, resting: true, remaining: ex.rest, ...this._workInit(w.exercises[s.exIdx + 1]) };
     }
-    return { ...s, setIdx: s.setIdx + 1, resting: true, remaining: ex.rest, ...this._workInit(ex) };
+    return { ...s, setIdx: s.setIdx + 1, resting: true, remaining: ex.rest, ...this._workInit(ex, s.setIdx + 1) };
   }
   // Aplica o resultado de _nextAfterSet; ao concluir registra histórico/streak.
   _applyNext(ns) {
@@ -452,7 +547,12 @@ class App {
       patch.history = history;
       patch.log = [...this.state.log, {
         ts: Date.now(), wId: ns.wId, name: w.name, elapsed: ns.elapsed,
-        exercises: w.exercises.map(e => ({ name: e.name, type: e.type, sets: e.sets, reps: e.reps, value: e.value })),
+        exercises: w.exercises.map(e => {
+          // registra a série valendo mais pesada (ignora aproximações)
+          const work = this._sets(e).filter(x => !isWarm(x.kind));
+          const top = work.reduce((a, x) => (a && a.value >= x.value) ? a : x, work[0]) || { value: 0, reps: 0 };
+          return { name: e.name, type: e.type, sets: work.length, reps: top.reps, value: top.value };
+        }),
       }];
       if (this.state.screen === 'lock') patch.screen = 'session';
     }
@@ -503,27 +603,33 @@ class App {
   }
   // Ajustes ao vivo durante a sessão: gravam direto no treino (valem também
   // para as próximas sessões e para a Evolução).
+  // Altera a série que está em execução
   _liveEdit(fn) {
     const s = this.state.session; if (!s) return;
-    const ws = this.state.workouts.map(w => w.id !== s.wId ? w
-      : { ...w, exercises: w.exercises.map((e, i) => i === s.exIdx ? fn({ ...e }) : e) });
+    const ws = this.state.workouts.map(w => w.id !== s.wId ? w : {
+      ...w,
+      exercises: w.exercises.map((e, i) => i !== s.exIdx ? e : {
+        ...e, sets: this._sets(e).map((st, j) => j === s.setIdx ? fn({ ...st }) : st),
+      }),
+    });
     this.setState({ workouts: ws });
   }
   liveVal(d) {
     const ex = this._curEx();
-    const st = (ex.type === 'maquina' || ex.type === 'elastico') ? 1 : 2.5;
-    this._liveEdit(e => ({ ...e, value: Math.max(0, +(e.value + d * st).toFixed(1)) }));
+    const step = (ex.type === 'maquina' || ex.type === 'elastico') ? 1 : 2.5;
+    this._liveEdit(st => ({ ...st, value: Math.max(0, +(st.value + d * step).toFixed(1)) }));
   }
   liveRep(d) {
     const ex = this._curEx(), t = T(ex.type);
     if (t.time) {
-      this._liveEdit(e => ({ ...e, value: Math.max(5, e.value + d * 5) }));
+      this._liveEdit(st => ({ ...st, value: Math.max(5, st.value + d * 5) }));
       const s = this.state.session;
-      if (!s.workRun) this.setState({ session: { ...s, workLeft: this._curEx().value } });
+      if (!s.workRun) this.setState({ session: { ...s, workLeft: this._curSet().value } });
     } else {
-      this._liveEdit(e => ({ ...e, reps: Math.max(1, Math.min(100, e.reps + d)) }));
+      this._liveEdit(st => ({ ...st, reps: Math.max(1, Math.min(100, st.reps + d)) }));
     }
   }
+  _curSet() { const s = this.state.session; return this._setAt(this._curEx(), s.setIdx); }
   quitSession() { this._clear(); this._wake(false); this._msStop(); this.setState({ screen: 'home', session: null }); }
 
   // ------------------------------------------------- Media Session (lock screen)
@@ -580,19 +686,20 @@ class App {
       const s = S.session;
       const w = S.workouts.find(x => x.id === s.wId);
       const ex = w.exercises[s.exIdx], t = T(ex.type);
-      const types = this._setTypes(ex), total = types.length;
-      const tipo = this._setTypeLabel(types[s.setIdx]);
+      const total = this._sets(ex).length;
+      const cur = this._setAt(ex, s.setIdx);
+      const tipo = this._setLabel(ex, s.setIdx);
       const serie = 'SÉRIE ' + (s.setIdx + 1) + '/' + total + (tipo ? ' · ' + tipo : '');
-      const carga = t.time ? ex.value + 'S' : (ex.type === 'corpo' ? 'LIVRE' : ex.value + ' ' + t.unit.toUpperCase());
+      const carga = t.time ? cur.value + 'S' : (ex.type === 'corpo' ? 'LIVRE' : cur.value + ' ' + t.unit.toUpperCase());
       const album = w.name + ' · EX ' + (s.exIdx + 1) + '/' + w.exercises.length + ' · DESC ' + ex.rest + 'S';
       const pausa = s.paused ? '⏸ PAUSADO · ' : '';
       if (s.resting) {
         this._msUpdate(pausa + 'DESCANSO ' + clock(s.remaining), ex.name.toUpperCase() + ' · ' + serie + ' A SEGUIR', ex.rest, ex.rest - s.remaining, !s.paused, album);
       } else if (t.time) {
-        const wl = s.workLeft ?? ex.value;
-        this._msUpdate(pausa + clock(wl) + ' · ' + serie, ex.name.toUpperCase() + ' · ' + carga, ex.value, ex.value - wl, s.workRun && !s.paused, album);
+        const wl = s.workLeft ?? cur.value;
+        this._msUpdate(pausa + clock(wl) + ' · ' + serie, ex.name.toUpperCase() + ' · ' + carga, cur.value, cur.value - wl, s.workRun && !s.paused, album);
       } else {
-        this._msUpdate(pausa + serie, ex.name.toUpperCase() + ' · ' + ex.reps + ' REPS · ' + carga, null, null, !s.paused, album);
+        this._msUpdate(pausa + serie, ex.name.toUpperCase() + ' · ' + cur.reps + ' REPS · ' + carga, null, null, !s.paused, album);
       }
     } else if (S.hiitRun) {
       const r = S.hiitRun, step = r.seq[r.idx];
@@ -700,12 +807,11 @@ class App {
       exToggle: () => this.toggleEx(i),
       exRemove: () => this.removeEx(i),
       exType: () => this.patchEx(i, T(d.key).time ? { type: d.key } : { type: d.key }),
-      setsUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { sets: Math.min(20, e.sets + 1) }); },
-      setsDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { sets: Math.max(1, e.sets - 1) }); },
-      repUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, T(e.type).time ? { value: e.value + 5 } : { reps: Math.min(100, e.reps + 1) }); },
-      repDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, T(e.type).time ? { value: Math.max(1, e.value - 5) } : { reps: Math.max(1, e.reps - 1) }); },
-      valUp: () => { const e = this.state.draft.exercises[i]; const st = (e.type === 'maquina' || e.type === 'elastico') ? 1 : 2.5; this.patchEx(i, { value: +(e.value + st).toFixed(1) }); },
-      valDown: () => { const e = this.state.draft.exercises[i]; const st = (e.type === 'maquina' || e.type === 'elastico') ? 1 : 2.5; this.patchEx(i, { value: Math.max(0, +(e.value - st).toFixed(1)) }); },
+      exDup: () => this.dupExercise(i),
+      setAdd: () => this.addSet(i),
+      setDel: () => this.delSet(i, parseInt(d.j, 10)),
+      setPick: () => this.pickSet(i, parseInt(d.j, 10)),
+      setKind: () => this.setKind(i, parseInt(d.j, 10), d.key),
       restUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.min(600, e.rest + 15) }); },
       restDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.max(0, e.rest - 15) }); },
       quitSession: () => this.quitSession(),
@@ -714,10 +820,6 @@ class App {
       sessPauseToggle: () => this._sessPause(!this.state.session?.paused),
       liveValUp: () => this.liveVal(1),   liveValDown: () => this.liveVal(-1),
       liveRepUp: () => this.liveRep(1),   liveRepDown: () => this.liveRep(-1),
-      wuUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { warmup: Math.min(10, (e.warmup || 0) + 1) }); },
-      wuDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { warmup: Math.max(0, (e.warmup || 0) - 1) }); },
-      dsUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { drop: Math.min(10, (e.drop || 0) + 1) }); },
-      dsDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { drop: Math.max(0, (e.drop || 0) - 1) }); },
       sessPrev: () => this.sessPrev(),
       sessNextEx: () => this.sessNextEx(),
       sessPrimary: () => this.sessPrimary(),
@@ -753,9 +855,11 @@ class App {
     const v = el.value;
     if (chg === 'draftName') this._mutDraft(dd => { dd.name = v; });
     else if (chg === 'exName') this.patchEx(i, { name: v });
-    else if (chg === 'exSets') this.patchEx(i, { sets: this.clampInt(v, 1, 20) });
-    else if (chg === 'exRep') { const e = this.state.draft.exercises[i]; this.patchEx(i, T(e.type).time ? { value: this.clampInt(v, 1, 3600) } : { reps: this.clampInt(v, 1, 100) }); }
-    else if (chg === 'exVal') { let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this.patchEx(i, { value: Math.max(0, n) }); }
+    else if (chg === 'exNotes') this.patchEx(i, { notes: v });
+    else if (chg === 'exRest') this.patchEx(i, { rest: this.parseSecs(v) });
+    else if (chg === 'setVal') { const j = parseInt(el.dataset.j, 10); let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this.patchSet(i, j, { value: Math.max(0, n) }); }
+    else if (chg === 'setReps') this.patchSet(i, parseInt(el.dataset.j, 10), { reps: this.clampInt(v, 1, 100) });
+    else if (chg === 'setDur') this.patchSet(i, parseInt(el.dataset.j, 10), { value: this.clampInt(v, 1, 3600) });
     else if (chg === 'liveVal') { let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this._liveEdit(e => ({ ...e, value: Math.max(0, n) })); }
     else if (chg === 'liveRep') {
       const ex = this._curEx(), t = T(ex.type);
@@ -768,6 +872,11 @@ class App {
         this._liveEdit(e => ({ ...e, reps: this.clampInt(v, 1, 100) }));
       }
     }
+    else if (chg === 'hPrep') this._mutHiit(h => { h.prepare = Math.min(120, this.parseSecs(v)); });
+    else if (chg === 'hWork') this._mutHiit(h => { h.work = Math.max(5, Math.min(600, this.parseSecs(v))); });
+    else if (chg === 'hRest') this._mutHiit(h => { h.rest = Math.min(300, this.parseSecs(v)); });
+    else if (chg === 'hCycles') this._mutHiit(h => { h.cycles = this.clampInt(v, 1, 20); });
+    else if (chg === 'hxWork') this.setHiitExWork(i, this.parseSecs(v));
     else if (chg === 'hiitName') this.renameHiitEx(i, v);
     else if (chg === 'profileName') this.setState({ profile: { ...this.state.profile, name: v.trim().toUpperCase() || 'ATLETA' } });
   }
@@ -775,7 +884,7 @@ class App {
   // ================================================================ render
   _inputFocused() {
     const ae = document.activeElement;
-    return !!(ae && ae.tagName === 'INPUT' && this.root.contains(ae));
+    return !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && this.root.contains(ae));
   }
   render() {
     if (this._inputFocused()) { this._renderPending = true; return; }
@@ -894,6 +1003,44 @@ class App {
   }
 
   // ---------------------------------------------------------------- editor
+  // Tabela de séries independentes: cada linha tem tipo, carga e reps próprias
+  _setsTable(ex, i, t) {
+    const hasLoad = !t.time && ex.type !== 'corpo';
+    const head = `
+      <div style="display:flex;align-items:center;gap:6px;padding:0 2px 4px;font-size:8px;letter-spacing:1px;color:${DIM}">
+        <span style="width:34px;text-align:center">SÉRIE</span>
+        ${hasLoad ? `<span style="flex:1;text-align:center">${t.unit.toUpperCase()}</span>` : ''}
+        <span style="flex:1;text-align:center">${t.time ? 'SEG' : 'REPS'}</span>
+        <span style="width:22px"></span>
+      </div>`;
+    const rows = this._sets(ex).map((st, j) => {
+      const k = K(st.kind);
+      const picker = !st._pick ? '' : `
+        <div style="display:flex;flex-wrap:wrap;gap:4px;padding:7px 2px 9px">
+          ${KINDS.map(kk => `<span data-act="setKind" data-i="${i}" data-j="${j}" data-key="${kk.key}" class="cbtn" style="padding:4px 7px;font-size:9px;letter-spacing:.5px;color:${kk.key === st.kind ? DARK : kk.color};background:${kk.key === st.kind ? kk.color : 'transparent'};border:1px solid ${kk.color}" title="${kk.hint}">${kk.short || '1'} ${kk.label}</span>`).join('')}
+        </div>`;
+      return `
+        <div style="border-top:1px dashed rgba(70,224,138,.18)">
+          <div style="display:flex;align-items:stretch;gap:6px;padding:5px 0">
+            <span data-act="setPick" data-i="${i}" data-j="${j}" class="cbtn" style="width:34px;display:flex;align-items:center;justify-content:center;font-family:'DSEG7',monospace;font-size:13px;color:${k.color};border:1px solid ${st._pick ? k.color : 'transparent'}" title="${k.label} — tocar para mudar">${this._setBadge(ex, j)}</span>
+            ${hasLoad ? `<input inputmode="decimal" value="${st.value}" data-chg="setVal" data-i="${i}" data-j="${j}" style="flex:1;font-size:16px;border:1px solid rgba(70,224,138,.25);padding:5px 0">` : ''}
+            <input inputmode="numeric" value="${t.time ? st.value : st.reps}" data-chg="${t.time ? 'setDur' : 'setReps'}" data-i="${i}" data-j="${j}" style="flex:1;font-size:16px;border:1px solid rgba(70,224,138,.25);padding:5px 0">
+            <span data-act="setDel" data-i="${i}" data-j="${j}" class="cbtn" style="width:22px;display:flex;align-items:center;justify-content:center;color:#e06a6a;font-size:13px">✕</span>
+          </div>
+          ${picker}
+        </div>`;
+    }).join('');
+    return `
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+          <span style="font-size:9px;letter-spacing:1px;color:${DIM}">SERIES</span>
+          <span style="font-size:9px;color:${BRIGHT}">TOQUE NA SIGLA P/ MUDAR O TIPO</span>
+        </div>
+        ${head}${rows}
+        <div data-act="setAdd" data-i="${i}" class="cbtn" style="margin-top:7px;border:1px dashed rgba(70,224,138,.4);padding:9px;text-align:center;font-size:10px;letter-spacing:1.5px;color:${GREEN}">+ ADICIONAR SÉRIE</div>
+      </div>`;
+  }
+
   rEditor() {
     const d = this.state.draft; if (!d) return '';
     const exSummary = ex => this._exSummary(ex);
@@ -907,64 +1054,27 @@ class App {
         <div style="padding:12px;display:flex;flex-direction:column;gap:12px;border-top:1px solid rgba(70,224,138,.25)">
           <input type="text" class="ti" value="${esc(ex.name)}" data-chg="exName" data-i="${i}" style="border:1px solid rgba(70,224,138,.3);padding:8px 10px;font-size:14px">
           <div>
+            <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">NOTAS (APARECEM NO TREINO)</div>
+            <textarea class="ti" rows="2" data-chg="exNotes" data-i="${i}" placeholder="Ex.: pegada fechada, 3s na descida…" style="width:100%;border:1px solid rgba(70,224,138,.3);padding:8px 10px;font-size:12px;resize:vertical">${esc(ex.notes || '')}</textarea>
+          </div>
+          <div>
             <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:6px">TIPO DE CARGA</div>
             <div style="display:flex;flex-wrap:wrap;gap:5px">${chips}</div>
           </div>
-          <div style="display:flex;gap:9px">
-            <div style="flex:1">
-              <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">SERIES VALIDAS</div>
-              <div style="display:flex;align-items:stretch;border:1px solid ${BORD}">
-                <div data-act="setsDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)">–</div>
-                <input inputmode="numeric" value="${ex.sets}" data-chg="exSets" data-i="${i}" style="flex:1;font-size:18px;padding:6px 0">
-                <div data-act="setsUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-left:1px solid rgba(70,224,138,.3)">+</div>
-              </div>
-            </div>
-            <div style="flex:1">
-              <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">${t.time ? 'DURACAO (S)' : 'REPETICOES'}</div>
-              <div style="display:flex;align-items:stretch;border:1px solid ${BORD}">
-                <div data-act="repDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)">–</div>
-                <input inputmode="numeric" value="${t.time ? ex.value : ex.reps}" data-chg="exRep" data-i="${i}" style="flex:1;font-size:18px;padding:6px 0">
-                <div data-act="repUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN};border-left:1px solid rgba(70,224,138,.3)">+</div>
-              </div>
-            </div>
-          </div>
-          <div style="display:flex;gap:9px">
-            <div style="flex:1">
-              <div style="font-size:9px;letter-spacing:1px;color:#ffd479;margin-bottom:5px">AQUECIMENTO</div>
-              <div style="display:flex;align-items:stretch;border:1px solid rgba(255,212,121,.35)">
-                <div data-act="wuDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ffd479">–</div>
-                <div style="flex:1;text-align:center;padding:6px 0;font-family:'DSEG7',monospace;font-size:18px;color:#ffd479;text-shadow:0 0 8px rgba(255,212,121,.4)">${ex.warmup || 0}</div>
-                <div data-act="wuUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ffd479">+</div>
-              </div>
-            </div>
-            <div style="flex:1">
-              <div style="font-size:9px;letter-spacing:1px;color:#ff8f6a;margin-bottom:5px">DROP SET</div>
-              <div style="display:flex;align-items:stretch;border:1px solid rgba(255,143,106,.35)">
-                <div data-act="dsDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ff8f6a">–</div>
-                <div style="flex:1;text-align:center;padding:6px 0;font-family:'DSEG7',monospace;font-size:18px;color:#ff8f6a;text-shadow:0 0 8px rgba(255,143,106,.4)">${ex.drop || 0}</div>
-                <div data-act="dsUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:#ff8f6a">+</div>
-              </div>
-            </div>
-          </div>
-          ${(!t.time && ex.type !== 'corpo') ? `
           <div>
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px"><span style="font-size:9px;letter-spacing:1px;color:${DIM}">CARGA — ${t.unit.toUpperCase()}</span><span style="font-size:9px;color:${BRIGHT}">TOQUE P/ DIGITAR</span></div>
-            <div style="display:flex;align-items:stretch;border:1px solid rgba(70,224,138,.4)">
-              <div data-act="valDown" data-i="${i}" class="cbtn" style="width:44px;display:flex;align-items:center;justify-content:center;font-size:20px;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)">–</div>
-              <input inputmode="decimal" value="${ex.value}" data-chg="exVal" data-i="${i}" style="flex:1;font-size:28px;padding:9px 0">
-              <div data-act="valUp" data-i="${i}" class="cbtn" style="width:44px;display:flex;align-items:center;justify-content:center;font-size:20px;color:${GREEN};border-left:1px solid rgba(70,224,138,.3)">+</div>
-            </div>
-          </div>` : ''}
-          <div>
-            <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">DESCANSO ENTRE SERIES</div>
+            <div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">DESCANSO ENTRE SERIES (MM:SS)</div>
             <div style="display:flex;align-items:stretch;border:1px solid rgba(70,224,138,.4)">
               <div style="width:34px;display:flex;align-items:center;justify-content:center;color:${GREEN};border-right:1px solid rgba(70,224,138,.3)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></div>
               <div data-act="restDown" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN}">–</div>
-              <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:7px 0;font-family:'DSEG7',monospace;font-size:20px;color:${NUM};text-shadow:0 0 10px rgba(70,224,138,.6)">${clock(ex.rest)}</div>
+              <input inputmode="numeric" value="${clock(ex.rest)}" data-chg="exRest" data-i="${i}" style="flex:1;font-size:20px;padding:7px 0">
               <div data-act="restUp" data-i="${i}" class="cbtn" style="width:30px;display:flex;align-items:center;justify-content:center;font-size:16px;color:${GREEN}">+</div>
             </div>
           </div>
-          <div data-act="exRemove" data-i="${i}" class="cbtn" style="text-align:center;font-size:10px;letter-spacing:1px;color:#e06a6a;border:1px solid rgba(224,106,106,.4);padding:8px">✕ REMOVER EXERCICIO</div>
+          ${this._setsTable(ex, i, t)}
+          <div style="display:flex;gap:8px">
+            <div data-act="exDup" data-i="${i}" class="cbtn" style="flex:1;text-align:center;font-size:10px;letter-spacing:1px;color:${GREEN};border:1px solid rgba(70,224,138,.4);padding:9px">⧉ DUPLICAR</div>
+            <div data-act="exRemove" data-i="${i}" class="cbtn" style="flex:1;text-align:center;font-size:10px;letter-spacing:1px;color:#e06a6a;border:1px solid rgba(224,106,106,.4);padding:9px">✕ REMOVER</div>
+          </div>
         </div>`;
       return `
         <div style="border:1px solid ${open ? GREEN : 'rgba(70,224,138,.3)'}">
@@ -1008,24 +1118,27 @@ class App {
       prevColor: s.exIdx > 0 ? GREEN : 'rgba(70,224,138,.22)',
       nextColor: (s.exIdx + 1 < w.exercises.length) ? GREEN : 'rgba(70,224,138,.22)',
       totalClock: clock(s.elapsed),
-      doneMeta: w.exercises.length + ' EXERCICIOS · ' + w.exercises.reduce((a, e) => a + this._setTypes(e).length, 0) + ' SERIES',
+      doneMeta: w.exercises.length + ' EXERCICIOS · ' + w.exercises.reduce((a, e) => a + this._sets(e).length, 0) + ' SERIES',
     };
     if (!s.done) {
       const ex = w.exercises[s.exIdx], t = T(ex.type);
-      const wl = s.workLeft ?? ex.value;
-      const types = this._setTypes(ex), total = types.length;
-      const SETC = { W: '255,212,121', V: '70,224,138', D: '255,143,106' };
-      V.ex = ex; V.t = t;
+      const sets = this._sets(ex), total = sets.length;
+      const cur = this._setAt(ex, s.setIdx);
+      const wl = s.workLeft ?? cur.value;
+      const hex2rgb = h => [1, 3, 5].map(k => parseInt(h.slice(k, k + 2), 16)).join(',');
+      V.ex = ex; V.t = t; V.cur = cur;
+      V.notes = (ex.notes || '').trim();
       V.exNum = pad(s.exIdx + 1) + ' / ' + pad(w.exercises.length);
       V.exName = ex.name.toUpperCase();
-      V.target = t.time ? ('ALVO: ' + ex.value + 's' + (ex.rest ? (' · DESC ' + ex.rest + 's') : '')) :
-        (ex.type === 'corpo' ? ('ALVO: ' + ex.reps + ' REPS · PESO LIVRE') : ('ALVO: ' + ex.reps + ' REPS · ' + ex.value + ' ' + t.unit.toUpperCase()));
+      V.target = t.time ? ('ALVO: ' + cur.value + 's' + (ex.rest ? (' · DESC ' + ex.rest + 's') : '')) :
+        (ex.type === 'corpo' ? ('ALVO: ' + cur.reps + ' REPS · PESO LIVRE') : ('ALVO: ' + cur.reps + ' REPS · ' + cur.value + ' ' + t.unit.toUpperCase()));
       V.setNum = pad(s.setIdx + 1); V.setTotal = pad(total);
-      V.setType = this._setTypeLabel(types[s.setIdx]);
+      V.setType = this._setLabel(ex, s.setIdx);
+      V.setColor = this._setColor(ex, s.setIdx);
       V.restS = ex.rest;
       V.paused = !!s.paused;
-      V.sets = types.map((tp, i) => {
-        const c = SETC[tp];
+      V.sets = sets.map((st, i) => {
+        const c = hex2rgb(K(st.kind).color);
         return {
           bg: i < s.setIdx ? `rgb(${c})` : (i === s.setIdx ? `rgba(${c},.5)` : `rgba(${c},.18)`),
           glow: i < s.setIdx ? `0 0 6px rgba(${c},.6)` : 'none',
@@ -1040,9 +1153,9 @@ class App {
       V.phaseLabel = s.paused ? 'PAUSADO' : (s.resting ? 'DESCANSO' : (t.time ? (s.workRun ? 'CRONÔMETRO' : 'PRONTO?') : 'EM SÉRIE'));
       V.phaseColor = s.paused ? '#ffd479' : (s.resting ? GREEN : BRIGHT);
       if (s.resting) { V.ghost = '88:88'; V.clock = clock(s.remaining); V.bigUnit = ''; }
-      else if (t.time) { V.ghost = '88:88'; V.clock = clock(wl); V.bigUnit = s.workRun ? 'CRONOMETRANDO...' : ('ALVO ' + ex.value + 'S'); }
-      else { V.ghost = '88'; V.clock = pad(ex.reps); V.bigUnit = ex.type === 'corpo' ? 'REPETICOES · LIVRE' : ('REPETICOES · ' + ex.value + ' ' + t.unit.toUpperCase()); }
-      V.workBtnLabel = s.workRun ? '❚❚ PAUSAR CRONÔMETRO' : (wl < ex.value ? '► RETOMAR' : '► INICIAR CRONÔMETRO');
+      else if (t.time) { V.ghost = '88:88'; V.clock = clock(wl); V.bigUnit = s.workRun ? 'CRONOMETRANDO...' : ('ALVO ' + cur.value + 'S'); }
+      else { V.ghost = '88'; V.clock = pad(cur.reps); V.bigUnit = ex.type === 'corpo' ? 'REPETICOES · LIVRE' : ('REPETICOES · ' + cur.value + ' ' + t.unit.toUpperCase()); }
+      V.workBtnLabel = s.workRun ? '❚❚ PAUSAR CRONÔMETRO' : (wl < cur.value ? '► RETOMAR' : '► INICIAR CRONÔMETRO');
       const nextEx = w.exercises[s.exIdx + 1];
       V.nextName = nextEx ? nextEx.name.toUpperCase() : '— ÚLTIMO EXERCÍCIO —';
       V.primaryLabel = s.resting ? 'PULAR DESCANSO' : 'SÉRIE OK ►';
@@ -1066,9 +1179,9 @@ class App {
       </div>`;
     const hasLoad = !t.time && ex.type !== 'corpo';
     const cells = [];
-    if (hasLoad) cells.push(step('CARGA — ' + t.unit.toUpperCase(), 'liveValDown', 'liveValUp', 'liveVal', ex.value, 'decimal'));
-    if (t.time) { if (!V.s.workRun) cells.push(step('TEMPO (S)', 'liveRepDown', 'liveRepUp', 'liveRep', ex.value, 'numeric')); }
-    else cells.push(step('REPS', 'liveRepDown', 'liveRepUp', 'liveRep', ex.reps, 'numeric'));
+    if (hasLoad) cells.push(step('CARGA — ' + t.unit.toUpperCase(), 'liveValDown', 'liveValUp', 'liveVal', V.cur.value, 'decimal'));
+    if (t.time) { if (!V.s.workRun) cells.push(step('TEMPO (S)', 'liveRepDown', 'liveRepUp', 'liveRep', V.cur.value, 'numeric')); }
+    else cells.push(step('REPS', 'liveRepDown', 'liveRepUp', 'liveRep', V.cur.reps, 'numeric'));
     return cells.length ? `<div style="display:flex;gap:16px;margin-top:10px">${cells.join('')}</div>` : '';
   }
   // Fila completa do treino: todos os exercícios que ainda faltam
@@ -1098,7 +1211,7 @@ class App {
           <span style="font-family:'DSEG7',monospace;font-size:12px;color:${GREEN}">${pad(i + 1)}</span>
           <div style="flex:1;min-width:0"><div style="font-size:13px;color:${BRIGHT};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.name)}</div><div style="font-size:9px;color:${DIM}">${this._exSummary(e)}</div></div>
         </div>`).join('');
-      const totalSeries = V.w.exercises.reduce((a, e) => a + this._setTypes(e).length, 0);
+      const totalSeries = V.w.exercises.reduce((a, e) => a + this._sets(e).length, 0);
       return `
         <div style="height:100%;display:flex;flex-direction:column">
           <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:6px 16px 9px;border-bottom:1px solid ${BORD};font-size:12px">
@@ -1153,7 +1266,8 @@ class App {
           <div style="font-size:24px;color:${BRIGHT};text-shadow:0 0 8px rgba(120,255,170,.5);margin-top:3px">${esc(V.exName)}</div>
           <div style="font-size:12px;color:${GREEN};margin-top:6px">${V.target}</div>
           <div style="display:flex;gap:6px;margin-top:14px">${setsBar}</div>
-          <div style="font-size:10px;color:${DIM};margin-top:6px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setType === 'DROP SET' ? '#ff8f6a' : '#ffd479'}">${V.setType}</span>` : ''}</div>
+          <div style="font-size:10px;color:${DIM};margin-top:6px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setColor}">${V.setType}</span>` : ''}</div>
+          ${V.notes ? `<div style="margin-top:9px;border-left:2px solid rgba(70,224,138,.5);padding:5px 0 5px 9px;font-size:11px;color:${BRIGHT};line-height:1.45;max-height:52px;overflow-y:auto">${esc(V.notes)}</div>` : ''}
           <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">
             <div style="font-size:11px;letter-spacing:4px;color:${V.phaseColor};text-shadow:0 0 8px rgba(70,224,138,.5)">${V.phaseLabel}</div>
             <div style="position:relative;line-height:1">
@@ -1208,7 +1322,8 @@ class App {
                 <div style="font-size:10px;letter-spacing:3px;color:${V.phaseColor}">${V.phaseLabel}</div>
                 <div style="font-size:21px;color:${BRIGHT};text-shadow:0 0 8px rgba(120,255,170,.5);margin-top:4px">${esc(V.exName)}</div>
                 <div style="display:flex;gap:5px;margin-top:8px">${V.sets.map(x => `<div style="flex:1;height:6px;background:${x.bg};box-shadow:${x.glow}"></div>`).join('')}</div>
-                <div style="font-size:10px;color:${DIM};margin-top:5px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setType === 'DROP SET' ? '#ff8f6a' : '#ffd479'}">${V.setType}</span>` : ''} · DESC ${V.restS}S</div>
+                <div style="font-size:10px;color:${DIM};margin-top:5px">SERIE ${V.setNum} DE ${V.setTotal}${V.setType ? ` · <span style="color:${V.setColor}">${V.setType}</span>` : ''} · DESC ${V.restS}S</div>
+                ${V.notes ? `<div style="margin-top:7px;border-left:2px solid rgba(70,224,138,.45);padding:3px 0 3px 8px;font-size:10px;color:${BRIGHT};line-height:1.4;max-height:34px;overflow:hidden">${esc(V.notes)}</div>` : ''}
               </div>
               <div style="display:flex;align-items:center;gap:16px">
                 <div style="position:relative;line-height:1">
@@ -1247,12 +1362,12 @@ class App {
   }
 
   // ---------------------------------------------------------------- HIIT
-  _cfgCell(label, actDown, actUp, display) {
+  _cfgCell(label, actDown, actUp, display, chg) {
     return `
       <div style="flex:1"><div style="font-size:9px;letter-spacing:1px;color:${DIM};margin-bottom:5px">${label}</div>
         <div style="display:flex;align-items:stretch;border:1px solid ${BORD}">
           <div data-act="${actDown}" class="cbtn" style="width:28px;display:flex;align-items:center;justify-content:center;color:${GREEN};font-size:16px">–</div>
-          <div style="flex:1;text-align:center;padding:6px 0;font-family:'DSEG7',monospace;font-size:17px;color:${NUM};text-shadow:0 0 8px rgba(70,224,138,.5)">${display}</div>
+          <input inputmode="numeric" value="${display}" data-chg="${chg}" style="flex:1;font-size:17px;padding:6px 0">
           <div data-act="${actUp}" class="cbtn" style="width:28px;display:flex;align-items:center;justify-content:center;color:${GREEN};font-size:16px">+</div>
         </div>
       </div>`;
@@ -1293,7 +1408,8 @@ class App {
         <input type="text" class="ti" value="${esc(this._hxName(e))}" data-chg="hiitName" data-i="${i}" style="flex:1;min-width:0;font-size:13px">
         <div style="display:flex;align-items:stretch;border:1px solid ${BORD};flex:none" title="Tempo ON deste exercício">
           <div data-act="hxDown" data-i="${i}" class="cbtn" style="width:24px;display:flex;align-items:center;justify-content:center;color:${GREEN};font-size:14px">–</div>
-          <div style="width:50px;text-align:center;padding:5px 0;font-family:'DSEG7',monospace;font-size:13px;color:${NUM};text-shadow:0 0 6px rgba(70,224,138,.5)">${clock(this._hxWork(e))}</div>
+          <input inputmode="numeric" value="${clock(this._hxWork(e))}" data-chg="hxWork" data-i="${i}" style="width:50px;font-size:13px;padding:5px 0">
+
           <div data-act="hxUp" data-i="${i}" class="cbtn" style="width:24px;display:flex;align-items:center;justify-content:center;color:${GREEN};font-size:14px">+</div>
         </div>
         <span data-act="hxRemove" data-i="${i}" class="cbtn" style="color:#e06a6a;font-size:14px">✕</span>
@@ -1309,12 +1425,12 @@ class App {
         </div>
         <div data-scroll="hiit" style="flex:1;overflow-y:auto;padding:14px 16px 16px;display:flex;flex-direction:column;gap:13px">
           <div style="display:flex;gap:9px">
-            ${this._cfgCell('PREPARAR', 'prepDown', 'prepUp', clock(H.prepare))}
-            ${this._cfgCell('CICLOS', 'cyclesDown', 'cyclesUp', pad(H.cycles))}
+            ${this._cfgCell('PREPARAR', 'prepDown', 'prepUp', clock(H.prepare), 'hPrep')}
+            ${this._cfgCell('CICLOS', 'cyclesDown', 'cyclesUp', pad(H.cycles), 'hCycles')}
           </div>
           <div style="display:flex;gap:9px">
-            ${this._cfgCell('ON PADRÃO', 'workDown', 'workUp', clock(H.work))}
-            ${this._cfgCell('DESCANSO (OFF)', 'hrestDown', 'hrestUp', clock(H.rest))}
+            ${this._cfgCell('ON PADRÃO', 'workDown', 'workUp', clock(H.work), 'hWork')}
+            ${this._cfgCell('DESCANSO (OFF)', 'hrestDown', 'hrestUp', clock(H.rest), 'hRest')}
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-top:2px"><span style="color:${GREEN}">&gt; EXERCICIOS DO CIRCUITO</span><span style="font-family:'DSEG7',monospace;font-size:13px;color:${GREEN};text-shadow:0 0 5px rgba(70,224,138,.5)">${pad(H.exercises.length)}</span></div>
           ${rows}

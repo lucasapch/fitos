@@ -77,12 +77,25 @@ input {
 input::-webkit-inner-spin-button,
 input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
-/* Inputs de texto (nomes) */
-input.ti {
+/* Inputs de texto (nomes, notas) */
+input.ti,
+textarea.ti {
   font-family: 'Share Tech Mono', monospace;
   text-align: left;
   color: #a6ffca;
 }
+
+textarea {
+  background: transparent;
+  border: none;
+  outline: none;
+  border-radius: 0;
+  color: #a6ffca;
+  font-family: 'Share Tech Mono', monospace;
+  line-height: 1.45;
+}
+
+::placeholder { color: #2e8a54; opacity: 1; }
 
 .cbtn { cursor: pointer; user-select: none; -webkit-user-select: none; }
 .cbtn:active { filter: brightness(1.4); }
