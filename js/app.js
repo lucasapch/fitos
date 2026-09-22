@@ -95,58 +95,98 @@ const newExercise = (name, open = false) => ({
   sets: Array(3).fill(0).map(() => ({ id: uid(), kind: 'N', value: 20, reps: 12 })),
 });
 
-// ---------------------------------------------------------------- seed
-function seedWorkouts() {
-  const ex = (name, type, sets, reps, value, rest) => ({
-    id: uid(), name, type, rest, notes: '',
-    sets: Array(sets).fill(0).map(() => ({ id: uid(), kind: 'N', value, reps })),
-  });
+// ---------------------------------------------------------------- plano
+// Upper/Lower 4 dias (plano-treino-lucas-4dias.md).
+// Linhas "a" do plano viram séries de aproximação (W); linhas "b" viram séries
+// valendo com o RIR indicado. Reps no limite inferior da faixa — é a regra de
+// dupla progressão do próprio plano. Cargas são ponto de partida: calibrar.
+const PLAN_VERSION = 2;
+
+function planUpperLower() {
+  // s(tipo, carga, reps, quantas) · e(nome, tipo, descanso, descansoAprox, notas, séries…)
+  const s = (kind, value, reps, n = 1) => Array(n).fill(0).map(() => ({ id: uid(), kind, value, reps }));
+  const e = (name, type, rest, restWarm, notes, ...sets) =>
+    ({ id: uid(), name, type, rest, restWarm, notes, sets: sets.flat() });
+
   return [
-    { id: 'w-seg', name: 'SEGUNDA — Pernas A', lastDone: null, exercises: [
-      ex('Agachamento Livre', 'kg', 4, 8, 40, 120),
-      ex('Leg Press 45°', 'maquina', 3, 10, 8, 90),
-      ex('Agachamento Búlgaro (p/ lado)', 'halter', 3, 10, 12, 90),
-      ex('Cadeira Extensora', 'maquina', 3, 15, 8, 60),
-      ex('Panturrilha em Pé', 'kg', 4, 15, 40, 45),
-      ex('Tibial Anterior', 'corpo', 3, 20, 0, 45),
-      ex('Dead Bug', 'corpo', 3, 12, 0, 30),
+    { id: 'ul-lowa', name: 'SEGUNDA — Lower A', lastDone: null, exercises: [
+      e('Agachamento Livre (profundo)', 'kg', 180, 60,
+        'Profundidade antes de carga. Se o tornozelo limitar, anilha sob o calcanhar. A barra vazia vale tanto quanto as outras: é onde você confere joelho e profundidade.',
+        s('W', 20, 12), s('W', 50, 8), s('W', 70, 5), s('W', 85, 3), s('R2', 100, 5, 3)),
+      e('Hack Squat ou Leg Press 45°', 'kg', 150, 60,
+        'ROM profundo: desça até o quadril começar a arredondar, não além. No leg press, pés na parte baixa da plataforma.',
+        s('W', 40, 12), s('W', 70, 8), s('R2', 100, 10, 3)),
+      e('Cadeira Extensora', 'maquina', 90, 45, '',
+        s('W', 4, 15), s('R1', 7, 12, 3)),
+      e('Cadeira Flexora Sentada', 'maquina', 90, null,
+        'Sentada, não deitada: quadril fletido deixa o isquiotibial sob comprimento longo.',
+        s('R1', 7, 10, 3)),
+      e('Panturrilha em Pé', 'kg', 75, null,
+        'Pausa de 2 s embaixo. Sem pausa, vira balanço.',
+        s('R1', 40, 10, 4)),
+      e('Tibial Anterior', 'corpo', 45, null, 'Prevenção de canelite — você corre 3x/semana.',
+        s('R1', 0, 15, 3)),
+      e('Dead Bug com carga', 'corpo', 45, null, '10 por lado, lombar colada no chão.',
+        s('N', 0, 10, 3)),
     ] },
-    { id: 'w-ter', name: 'TERÇA — Push', lastDone: null, exercises: [
-      ex('Supino Reto', 'kg', 4, 8, 40, 120),
-      ex('Supino Inclinado Halteres', 'halter', 3, 10, 16, 90),
-      ex('Desenvolvimento Halteres', 'halter', 3, 10, 12, 90),
-      ex('Elevação Lateral', 'halter', 3, 15, 8, 45),
-      ex('Crucifixo na Máquina', 'maquina', 3, 12, 7, 60),
-      ex('Tríceps Corda', 'maquina', 3, 12, 8, 60),
-      ex('Tríceps Francês', 'halter', 2, 12, 10, 60),
+
+    { id: 'ul-uppa', name: 'TERÇA — Upper A', lastDone: null, exercises: [
+      e('Supino Reto Barra', 'kg', 150, 60,
+        'Montagem idêntica desde a barra vazia: mesma pegada, mesma retração de escápula, mesmo pé. Nos dias de 6 reps, cabe uma 5ª aproximação a ~90% × 1–2.',
+        s('W', 20, 15), s('W', 40, 8), s('W', 55, 5), s('W', 65, 3), s('R2', 80, 6, 4)),
+      e('Remada com Apoio no Peito', 'maquina', 150, 45,
+        'Substitui a curvada: mesmo estímulo nas dorsais, zero demanda dos eretores.',
+        s('W', 5, 10), s('W', 8, 6), s('R2', 10, 8, 4)),
+      e('Supino Inclinado Halteres', 'halter', 120, 60, 'ROM completo.',
+        s('W', 14, 10), s('R1', 22, 8, 3)),
+      e('Remada Baixa Pegada Neutra', 'maquina', 90, null, '', s('R1', 9, 10, 3)),
+      e('Elevação Lateral no Cabo', 'maquina', 60, null,
+        'Unilateral, braço passando atrás do corpo: carrega o deltoide na posição alongada.',
+        s('R1', 4, 12, 4)),
+      e('Face Pull', 'maquina', 45, null, 'Na altura dos olhos.', s('R1', 5, 15, 3)),
+      e('Tríceps Francês / Testa', 'halter', 60, null, 'Overhead: tríceps sob estiramento.',
+        s('R1', 12, 10, 3)),
+      e('Rosca Inclinada Halteres', 'halter', 60, null, 'Banco a 45°: bíceps sob estiramento.',
+        s('R1', 10, 10, 3)),
     ] },
-    { id: 'w-qua', name: 'QUARTA — Pull', lastDone: null, exercises: [
-      ex('Barra Fixa ou Puxada Alta', 'corpo', 4, 10, 0, 90),
-      ex('Remada Curvada', 'kg', 3, 10, 40, 90),
-      ex('Remada Baixa', 'maquina', 3, 12, 9, 60),
-      ex('Face Pull', 'maquina', 3, 15, 6, 45),
-      ex('Rosca Direta', 'kg', 3, 10, 20, 60),
-      ex('Rosca Martelo', 'halter', 3, 12, 12, 60),
-      ex('Prancha', 'tempo', 3, 0, 45, 30),
+
+    { id: 'ul-uppb', name: 'QUINTA — Upper B', lastDone: null, exercises: [
+      e('Barra Fixa ou Puxada Neutra', 'corpo', 150, 60,
+        'Aproximação na assistida ou com elástico. Se o antebraço falhar antes das costas, corte a suspensão do aquecimento e use straps.',
+        s('W', 0, 6), s('W', 0, 3), s('R2', 0, 6, 4)),
+      e('Desenvolvimento Halteres Sentado', 'halter', 150, 60,
+        'Encosto a ~80°, não 90°: menos impacto no ombro, mais peitoral superior.',
+        s('W', 12, 10), s('W', 20, 6), s('W', 26, 3), s('R2', 30, 8, 4)),
+      e('Puxada Alta Aberta ou Unilateral', 'maquina', 90, null, '', s('R1', 9, 10, 3)),
+      e('Crucifixo Máquina / Peck Deck', 'maquina', 90, null,
+        'Leve o braço até sentir o alongamento antes de voltar. A fase alongada é o que interessa.',
+        s('R1', 7, 12, 3)),
+      e('Elevação Lateral Máquina', 'maquina', 60, null, '', s('R1', 5, 12, 4)),
+      e('Tríceps Corda / Barra V', 'maquina', 60, null, '', s('R1', 8, 10, 3)),
+      e('Rosca Martelo ou Scott', 'halter', 60, null, '', s('R1', 12, 10, 3)),
+      e('Suitcase Carry (30–40 m/lado)', 'tempo', 60, null,
+        'Peso só de um lado, tronco absolutamente neutro, sem inclinar. Troque o lado a cada série.',
+        s('N', 40, 0, 3)),
     ] },
-    { id: 'w-qui', name: 'QUINTA — Pernas B', lastDone: null, exercises: [
-      ex('Terra Romeno', 'kg', 4, 8, 50, 120),
-      ex('Hip Thrust', 'kg', 4, 10, 60, 90),
-      ex('Mesa Flexora', 'maquina', 3, 12, 8, 60),
-      ex('Step-up com Halteres (p/ lado)', 'halter', 3, 10, 12, 60),
-      ex('Cadeira Abdutora', 'maquina', 3, 15, 9, 45),
-      ex('Panturrilha Sentado', 'maquina', 4, 15, 8, 45),
-      ex('Pallof Press (p/ lado)', 'elastico', 3, 12, 3, 30),
-    ] },
-    { id: 'w-sex', name: 'SEXTA — Upper Completo', lastDone: null, exercises: [
-      ex('Supino Inclinado', 'kg', 3, 10, 30, 90),
-      ex('Remada Unilateral (p/ lado)', 'halter', 3, 10, 20, 60),
-      ex('Desenvolvimento Arnold', 'halter', 3, 10, 10, 60),
-      ex('Puxada Neutra', 'maquina', 3, 10, 9, 60),
-      ex('Elevação Lateral', 'halter', 2, 15, 8, 45),
-      ex('Rosca Scott', 'kg', 2, 12, 15, 45),
-      ex('Tríceps Testa', 'kg', 2, 12, 15, 45),
-      ex('Farmer Carry (30–40 m)', 'tempo', 3, 0, 40, 60),
+
+    { id: 'ul-lowb', name: 'SEXTA — Lower B', lastDone: null, exercises: [
+      e('Terra Romeno', 'kg', 150, 60,
+        'Coluna neutra o tempo todo; desça até sentir o alongamento do isquiotibial. Não é dia de recorde: as leves servem para confirmar o padrão antes da carga.',
+        s('W', 20, 10), s('W', 45, 8), s('W', 60, 5), s('W', 75, 3), s('R2', 90, 8, 3)),
+      e('Hip Thrust', 'kg', 120, 60, '', s('W', 40, 12), s('W', 60, 8), s('R1', 80, 8, 3)),
+      e('Agachamento Búlgaro', 'halter', 90, 60,
+        '8–10 por lado, tronco levemente inclinado.',
+        s('W', 10, 8), s('R2', 16, 8, 3)),
+      e('Cadeira Flexora Sentada', 'maquina', 90, null, '', s('R1', 7, 12, 3)),
+      e('Cadeira Abdutora', 'maquina', 60, null,
+        'Tronco inclinado à frente recruta bem mais glúteo médio do que sentado ereto.',
+        s('R1', 9, 15, 3)),
+      e('Extensão Lombar 45°', 'corpo', 60, null,
+        'Isometria de 2 s no topo. Carga leve: é resistência dos eretores, não força máxima.',
+        s('R1', 0, 12, 3)),
+      e('Panturrilha Sentada', 'maquina', 60, null, '', s('R1', 7, 12, 3)),
+      e('Pallof Press', 'elastico', 45, null, '10–12 por lado. Anti-rotação: não deixe o tronco girar.',
+        s('N', 3, 10, 3)),
     ] },
   ];
 }
@@ -164,9 +204,19 @@ class App {
   constructor(root) {
     this.root = root;
     const p = loadPersisted() || {};
+    // Instalação nova recebe o plano direto; instalação existente recebe os
+    // treinos do plano novo somados aos dela (nada é apagado sem ela mandar).
+    let workouts = p.workouts ? migrateWorkouts(p.workouts) : planUpperLower();
+    let planVersion = p.planVersion || (p.workouts ? 1 : PLAN_VERSION);
+    if (planVersion < PLAN_VERSION) {
+      const novos = planUpperLower().filter(n => !workouts.some(w => w.id === n.id));
+      workouts = [...novos, ...workouts];
+      planVersion = PLAN_VERSION;
+    }
     this.state = {
       screen: 'home',
-      workouts: p.workouts ? migrateWorkouts(p.workouts) : seedWorkouts(),
+      planVersion,
+      workouts,
       draft: null,
       session: null,
       sheet: null,
@@ -197,7 +247,7 @@ class App {
         if (this._renderPending && !this._inputFocused()) { this._renderPending = false; this.render(); }
       }, 0);
     });
-    if (p.workouts || p.settings) this.persist();   // grava o formato migrado
+    this.persist();   // grava o formato migrado e o plano novo
     document.addEventListener('pointerdown', () => { this._audio(); }, { once: true });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && (this.state.session || this.state.hiitRun)) this._wake(true);
@@ -212,8 +262,8 @@ class App {
     this.render();
   }
   persist() {
-    const { workouts, hiit, settings, profile, history, log } = this.state;
-    try { localStorage.setItem(LS_KEY, JSON.stringify({ workouts, hiit, settings, profile, history, log })); } catch (e) { /* sem espaço */ }
+    const { workouts, hiit, settings, profile, history, log, planVersion } = this.state;
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ workouts, hiit, settings, profile, history, log, planVersion })); } catch (e) { /* sem espaço */ }
   }
 
   // ---------------------------------------------------------------- ticker
@@ -479,6 +529,12 @@ class App {
     return String(this._sets(ex).slice(0, i + 1).filter(x => !K(x.kind).short).length);
   }
   _setLabel(ex, i) { const k = K(this._setAt(ex, i).kind); return k.key === 'N' ? '' : k.label; }
+  // Descanso que vem DEPOIS da série `i`: aproximações usam o descanso curto
+  // (restWarm), quando definido; as demais usam o descanso cheio do exercício.
+  _restAfter(ex, i) {
+    const st = this._setAt(ex, i);
+    return (isWarm(st.kind) && ex.restWarm != null) ? ex.restWarm : ex.rest;
+  }
   _workInit(ex, setIdx = 0) {
     const t = T(ex.type);
     return t.time ? { workLeft: this._setAt(ex, setIdx).value, workRun: false } : { workLeft: 0, workRun: false };
@@ -620,13 +676,13 @@ class App {
     const sets = this._sets(ex);
     if (prog[ex.id] < sets.length) {
       // ainda há séries neste exercício → descanso e avança a série
-      ns = { ...ns, setIdx: prog[ex.id], resting: true, remaining: ex.rest, ...this._workInit(ex, prog[ex.id]) };
+      ns = { ...ns, setIdx: prog[ex.id], resting: true, remaining: this._restAfter(ex, st.setIdx), ...this._workInit(ex, prog[ex.id]) };
     } else {
       // exercício concluído → descansa e vai para o próximo pendente
       const nx = this._nextPending(ns, w, st.exIdx);
       const nex = w.exercises[nx];
       const nSet = Math.min(this._prog(ns, nex), Math.max(0, this._sets(nex).length - 1));
-      ns = { ...ns, exIdx: nx, setIdx: nSet, resting: true, remaining: ex.rest, ...this._workInit(nex, nSet) };
+      ns = { ...ns, exIdx: nx, setIdx: nSet, resting: true, remaining: this._restAfter(ex, st.setIdx), ...this._workInit(nex, nSet) };
     }
     this.setState({ session: ns });
     this._resched();
@@ -814,10 +870,11 @@ class App {
       const carga = t.time ? cur.value + 'S' : (ex.type === 'corpo' ? 'LIVRE' : cur.value + ' ' + t.unit.toUpperCase());
       const feitos = w.exercises.filter(e => this._exDone(s, e)).length;
       const album = w.name + ' · EX ' + (s.exIdx + 1) + '/' + w.exercises.length
-        + ' · ' + feitos + ' OK · DESC ' + ex.rest + 'S';
+        + ' · ' + feitos + ' OK · DESC ' + this._restAfter(ex, s.setIdx) + 'S';
       const pausa = s.paused ? '⏸ PAUSADO · ' : '';
       if (s.resting) {
-        this._msUpdate(pausa + 'DESCANSO ' + clock(s.remaining), ex.name.toUpperCase() + ' · ' + serie + ' A SEGUIR', ex.rest, ex.rest - s.remaining, !s.paused, album);
+        const rTot = Math.max(s.remaining, this._restAfter(ex, Math.max(0, s.setIdx - 1)));
+        this._msUpdate(pausa + 'DESCANSO ' + clock(s.remaining), ex.name.toUpperCase() + ' · ' + serie + ' A SEGUIR', rTot, rTot - s.remaining, !s.paused, album);
       } else if (t.time) {
         const wl = s.workLeft ?? cur.value;
         this._msUpdate(pausa + clock(wl) + ' · ' + serie, ex.name.toUpperCase() + ' · ' + carga, cur.value, cur.value - wl, s.workRun && !s.paused, album);
@@ -940,6 +997,8 @@ class App {
       setKind: () => this.setKind(i, j, d.key),
       restUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.min(600, e.rest + 15) }); },
       restDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { rest: Math.max(0, e.rest - 15) }); },
+      restWUp: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { restWarm: Math.min(600, (e.restWarm ?? e.rest) + 15) }); },
+      restWDown: () => { const e = this.state.draft.exercises[i]; this.patchEx(i, { restWarm: Math.max(0, (e.restWarm ?? e.rest) - 15) }); },
       quitSession: () => this.quitSession(),
       sessBegin: () => this.sessBegin(),
       sessEdit: () => this.sessEdit(),
@@ -990,6 +1049,7 @@ class App {
     else if (chg === 'exName') this.patchEx(i, { name: v });
     else if (chg === 'exNotes') this.patchEx(i, { notes: v });
     else if (chg === 'exRest') this.patchEx(i, { rest: this.parseSecs(v) });
+    else if (chg === 'exRestW') this.patchEx(i, { restWarm: this.parseSecs(v) });
     else if (chg === 'setVal') { let n = parseFloat(String(v).replace(',', '.')); if (isNaN(n)) n = 0; this.patchSet(i, j, { value: Math.max(0, n) }); }
     else if (chg === 'setReps') this.patchSet(i, j, { reps: this.clampInt(v, 1, 100) });
     else if (chg === 'setDur') this.patchSet(i, j, { value: this.clampInt(v, 1, 3600) });
@@ -1096,7 +1156,7 @@ class App {
   rHome() {
     const S = this.state, now = new Date();
     const prefixo = ['DOMINGO', 'SEGUNDA', 'TERCA', 'QUARTA', 'QUINTA', 'SEXTA', 'SABADO'][now.getDay()];
-    const today = S.workouts.find(w => noAcc(w.name).startsWith(prefixo)) || S.workouts[0];
+    const today = S.workouts.find(w => noAcc(w.name).startsWith(prefixo));
     const st = today ? this._wStats(today) : null;
     const rows = S.workouts.map((w, i) => `
       <div data-act="openW" data-id="${w.id}" class="item">
@@ -1127,9 +1187,14 @@ class App {
             <div class="small">${st.ex} exercícios · ${st.sets} séries · ~${st.min} min</div>
             <div data-act="openW" data-id="${today.id}" class="btn btn-primary btn-lg btn-block" style="margin-top:16px">Iniciar treino</div>
           </div>` : `
-          <div class="card center col" style="gap:12px;padding:30px 16px">
-            <div class="small">Nenhum treino cadastrado.</div>
-            <div data-act="newWorkout" class="btn btn-primary">Criar treino</div>
+          <div class="card">
+            <div class="row-between">
+              <span class="label label-ink">Hoje</span>
+              <span class="label">${DIAS[now.getDay()]} ${pad(now.getDate())}</span>
+            </div>
+            <div class="h1" style="margin:14px 0 6px">Sem treino programado</div>
+            <div class="small">${S.workouts.length ? 'Dia de descanso ou corrida. Se quiser treinar mesmo assim, escolha um treino abaixo.' : 'Nenhum treino cadastrado ainda.'}</div>
+            <div data-act="${S.workouts.length ? 'goList' : 'newWorkout'}" class="btn btn-ghost btn-block" style="margin-top:16px">${S.workouts.length ? 'Escolher treino' : 'Criar treino'}</div>
           </div>`}
 
           <div class="row gap-m">
@@ -1248,13 +1313,24 @@ class App {
             <div class="label" style="margin-bottom:7px">Tipo de carga</div>
             <div class="row" style="flex-wrap:wrap;gap:5px">${chips}</div>
           </div>
-          <div>
-            <div class="label" style="margin-bottom:7px">Descanso entre séries</div>
-            <div class="stepper">
-              <span data-act="restDown" data-i="${i}" class="sbtn">–</span>
-              <input inputmode="numeric" value="${clock(ex.rest)}" data-chg="exRest" data-i="${i}">
-              <span data-act="restUp" data-i="${i}" class="sbtn">+</span>
+          <div class="row gap-m">
+            <div class="col grow" style="gap:7px">
+              <span class="label">Descanso</span>
+              <div class="stepper">
+                <span data-act="restDown" data-i="${i}" class="sbtn">–</span>
+                <input inputmode="numeric" value="${clock(ex.rest)}" data-chg="exRest" data-i="${i}">
+                <span data-act="restUp" data-i="${i}" class="sbtn">+</span>
+              </div>
             </div>
+            ${this._sets(ex).some(s => isWarm(s.kind)) ? `
+            <div class="col grow" style="gap:7px">
+              <span class="label" style="color:var(--ink-3)">Após aproximação</span>
+              <div class="stepper">
+                <span data-act="restWDown" data-i="${i}" class="sbtn">–</span>
+                <input inputmode="numeric" value="${clock(ex.restWarm != null ? ex.restWarm : ex.rest)}" data-chg="exRestW" data-i="${i}">
+                <span data-act="restWUp" data-i="${i}" class="sbtn">+</span>
+              </div>
+            </div>` : ''}
           </div>
           ${this._setsTable(ex, i, t)}
           <div class="row gap-s">
@@ -1324,7 +1400,7 @@ class App {
       V.setNum = pad(s.setIdx + 1); V.setTotal = pad(total);
       V.setType = this._setLabel(ex, s.setIdx);
       V.setColor = kindColor(cur.kind);
-      V.restS = ex.rest;
+      V.restS = this._restAfter(ex, s.setIdx);
       V.paused = !!s.paused;
       V.target = t.time ? cur.value + 's'
         : (ex.type === 'corpo' ? cur.reps + ' reps · peso livre' : cur.reps + ' reps · ' + cur.value + ' ' + t.unit);
