@@ -1,11 +1,12 @@
 // ============ Service worker — casca offline (FITOS) ============
-const CACHE = 'fitos-v6';
+const CACHE = 'fitos-v7';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/styles.css',
   './js/app.js',
+  './js/dot.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
